@@ -531,9 +531,8 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
         batchM.reserve(BATCH_SIZE);
         batchS.reserve(BATCH_SIZE);
 
-        for (size_t i = 0; i < BATCH_SIZE && mutations.next(unmapped, _ignored); i++, completed++) {
+        for (size_t i = 0; i < BATCH_SIZE && mutations.next(unmapped, _ignored); i++) {
             if (unmapped.samples.empty()) {
-
                 lastSamplesetSize = unmapped.samples.size();
                 stats.emptyMutations++;
                 grg->addMutation(unmapped.mutation, INVALID_NODE_ID);
@@ -572,6 +571,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
                     sampleCounts[nodeId] = sumSamples;
                 }
             }
+            completed++;
 
             const size_t percentCompleted = (completed / onePercent);
             if ((completed % onePercent == 0)) {
