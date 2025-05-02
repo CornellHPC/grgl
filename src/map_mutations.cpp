@@ -550,24 +550,20 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
             break;
         }
 
-        // process each mutation one‑at‑a‑time (process_batch signature unchanged)
-        std::vector<NodeID> allAdded;
         for (size_t i = 0; i < batchM.size(); ++i) {
             NodeIDList added =
                 process_batch(grg, sampleCounts, std::vector<Mutation>{batchM[i]}, batchS[i], stats, shapeNodeIdMax);
-            allAdded.insert(allAdded.end(), added.begin(), added.end());
-        }
 
-        // update sampleCounts once for the whole batch
-        size_t oldSize = sampleCounts.size();
-        sampleCounts.resize(oldSize + allAdded.size());
-        for (auto nodeId : allAdded) {
-            NodeIDSizeT sumSamples = 0;
-            for (auto child : grg->getDownEdges(nodeId)) {
-                release_assert(sampleCounts[child] > 0);
-                sumSamples += sampleCounts[child];
+            size_t oldSize = sampleCounts.size();
+            sampleCounts.resize(oldSize + added.size());
+            for (auto nodeId : added) {
+                NodeIDSizeT sumSamples = 0;
+                for (auto child : grg->getDownEdges(nodeId)) {
+                    release_assert(sampleCounts[child] > 0);
+                    sumSamples += sampleCounts[child];
+                }
+                sampleCounts[nodeId] = sumSamples;
             }
-            sampleCounts[nodeId] = sumSamples;
         }
     }
 
