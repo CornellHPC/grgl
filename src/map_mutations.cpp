@@ -520,10 +520,11 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
     // nodes of interest, and collect all nodes that reach a subset of those nodes.
 
     // --- begin batching loop ---
-    const size_t BATCH_SIZE = 2;
+    const size_t BATCH_SIZE = 1;
     size_t _ignored = 0;
     MutationAndSamples unmapped;
 
+    size_t lastSamplesetSize = 0;
     while (true) {
         std::vector<Mutation> batchM;
         std::vector<NodeIDList> batchS;
@@ -532,6 +533,8 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
 
         for (size_t i = 0; i < BATCH_SIZE && mutations.next(unmapped, _ignored); ++i, ++completed) {
             if (unmapped.samples.empty()) {
+
+                lastSamplesetSize = unmapped.samples.size();
                 stats.emptyMutations++;
                 grg->addMutation(unmapped.mutation, INVALID_NODE_ID);
             } else {
@@ -573,7 +576,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
         std::cout << percentCompleted << "% done" << std::endl;
     }
     if ((completed % (EMIT_STATS_AT_PERCENT * onePercent) == 0)) {
-        std::cout << "Last mutation sampleset size: " << mutSamples.size() << std::endl;
+        std::cout << "Last mutation sampleset size: " << lastSamplesetSize << std::endl;
         std::cout << "GRG nodes: " << grg->numNodes() << std::endl;
         std::cout << "GRG edges: " << grg->numEdges() << std::endl;
         stats.print(std::cout);
@@ -583,8 +586,6 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
         grg->compact();
         EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
     }
+    return stats;
 }
-return stats;
-}
-}
-; // namespace grgl
+}; // namespace grgl
