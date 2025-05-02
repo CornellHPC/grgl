@@ -583,14 +583,14 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
                 std::cout << "GRG edges: " << grg->numEdges() << std::endl;
                 stats.print(std::cout);
             }
+            if ((completed % (COMPACT_EDGES_AT_PERCENT * onePercent) == 0)) {
+                START_TIMING_OPERATION();
+                grg->compact();
+                EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
+            }
         }
     }
 
-    if ((completed % (COMPACT_EDGES_AT_PERCENT * onePercent) == 0)) {
-        START_TIMING_OPERATION();
-        grg->compact();
-        EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
-    }
     return stats;
 }
 }; // namespace grgl
