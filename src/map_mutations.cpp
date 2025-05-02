@@ -518,55 +518,73 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
 
     // For each mutation, perform a topological bottom-up traversal from the sample
     // nodes of interest, and collect all nodes that reach a subset of those nodes.
-    size_t _ignored = 0;
-    MutationAndSamples unmapped = {Mutation(0.0, ""), NodeIDList()};
-    while (mutations.next(unmapped, _ignored)) {
-        bool tracing = false;
-        const NodeIDList& mutSamples = unmapped.samples;
-        if (!mutSamples.empty()) {
-            if (tracing) {
-                std::cout << ">>> Has " << mutSamples.size() << " samples\n";
-            }
-            stats.samplesProcessed += mutSamples.size();
-            if (mutSamples.size() == 1) {
-                stats.mutationsWithOneSample++;
-            }
-            // Step 1: Add mutation node and create edges to existing nodes.
-            NodeIDList addedNodes =
-                process_batch(grg, sampleCounts, {unmapped.mutation}, mutSamples, stats, shapeNodeIdMax);
-            // greedyAddMutation(grg, sampleCounts, unmapped.mutation, mutSamples, stats, shapeNodeIdMax);
 
-            // Step 2: Add the new mutation node to the sample counts.
-            sampleCounts.resize(sampleCounts.size() + addedNodes.size());
-            for (const auto& nodeId : addedNodes) {
-                NodeIDSizeT sumSamples = 0;
-                for (const auto& childId : grg->getDownEdges(nodeId)) {
-                    release_assert(sampleCounts[childId] > 0);
-                    sumSamples += sampleCounts[childId];
+    // --- begin batching loop ---
+    const size_t BATCH_SIZE = 2;
+    size_t _ignored = 0;
+    MutationAndSamples unmapped;
+
+    while (true) {
+        std::vector<Mutation> batchM;
+        std::vector<NodeIDList> batchS;
+        batchM.reserve(BATCH_SIZE);
+        batchS.reserve(BATCH_SIZE);
+
+        for (size_t i = 0; i < BATCH_SIZE && mutations.next(unmapped, _ignored); ++i, ++completed) {
+            if (unmapped.samples.empty()) {
+                stats.emptyMutations++;
+                grg->addMutation(unmapped.mutation, INVALID_NODE_ID);
+            } else {
+                batchM.push_back(unmapped.mutation);
+                batchS.push_back(unmapped.samples);
+                stats.samplesProcessed += unmapped.samples.size();
+                if (unmapped.samples.size() == 1) {
+                    stats.mutationsWithOneSample++;
                 }
-                sampleCounts[nodeId] = sumSamples;
             }
-        } else {
-            stats.emptyMutations++;
-            grg->addMutation(unmapped.mutation, INVALID_NODE_ID);
         }
-        completed++;
-        const size_t percentCompleted = (completed / onePercent);
-        if ((completed % onePercent == 0)) {
-            std::cout << percentCompleted << "% done" << std::endl;
+        if (batchM.empty()) {
+            break;
         }
-        if ((completed % (EMIT_STATS_AT_PERCENT * onePercent) == 0)) {
-            std::cout << "Last mutation sampleset size: " << mutSamples.size() << std::endl;
-            std::cout << "GRG nodes: " << grg->numNodes() << std::endl;
-            std::cout << "GRG edges: " << grg->numEdges() << std::endl;
-            stats.print(std::cout);
+
+        // process each mutation one‑at‑a‑time (process_batch signature unchanged)
+        std::vector<NodeID> allAdded;
+        for (size_t i = 0; i < batchM.size(); ++i) {
+            NodeIDList added =
+                process_batch(grg, sampleCounts, std::vector<Mutation>{batchM[i]}, batchS[i], stats, shapeNodeIdMax);
+            allAdded.insert(allAdded.end(), added.begin(), added.end());
         }
-        if ((completed % (COMPACT_EDGES_AT_PERCENT * onePercent) == 0)) {
-            START_TIMING_OPERATION();
-            grg->compact();
-            EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
+
+        // update sampleCounts once for the whole batch
+        size_t oldSize = sampleCounts.size();
+        sampleCounts.resize(oldSize + allAdded.size());
+        for (auto nodeId : allAdded) {
+            NodeIDSizeT sumSamples = 0;
+            for (auto child : grg->getDownEdges(nodeId)) {
+                release_assert(sampleCounts[child] > 0);
+                sumSamples += sampleCounts[child];
+            }
+            sampleCounts[nodeId] = sumSamples;
         }
     }
-    return stats;
+
+    const size_t percentCompleted = (completed / onePercent);
+    if ((completed % onePercent == 0)) {
+        std::cout << percentCompleted << "% done" << std::endl;
+    }
+    if ((completed % (EMIT_STATS_AT_PERCENT * onePercent) == 0)) {
+        std::cout << "Last mutation sampleset size: " << mutSamples.size() << std::endl;
+        std::cout << "GRG nodes: " << grg->numNodes() << std::endl;
+        std::cout << "GRG edges: " << grg->numEdges() << std::endl;
+        stats.print(std::cout);
+    }
+    if ((completed % (COMPACT_EDGES_AT_PERCENT * onePercent) == 0)) {
+        START_TIMING_OPERATION();
+        grg->compact();
+        EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
+    }
 }
-}; // namespace grgl
+return stats;
+}
+}
+; // namespace grgl
