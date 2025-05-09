@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <thread>
 // When enabled: garbage collects unneeded sample sets
 #define CLEANUP_SAMPLE_SETS_MAPPING 1
 
@@ -345,6 +346,48 @@ static NodeIDList process_batch(const MutableGRGPtr& grg,
     return addedNodes;
 }
 
+static NodeIDList process_batch_par(const MutableGRGPtr& grg,
+                                    const std::vector<NodeIDSizeT>& sampleCounts,
+                                    const std::vector<Mutation>& mutations,
+                                    const NodeIDList& mutSamples,
+                                    MutationMappingStats& stats,
+                                    const NodeID shapeNodeIdMax) {
+    int batch_size = mutations.size();
+    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(batch_size);
+
+    std::vector<std::thread> threads;
+    threads.reserve(batch_size);
+    for (int i = 0; i < batch_size; ++i) {
+        threads.emplace_back([&, i]() {
+            batchTasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples, stats, shapeNodeIdMax, i);
+        });
+    }
+
+    for (auto& threads : threads) {
+        threads.join();
+    }
+
+    NodeIDList added;
+    for (int i = 0; i < batch_size; ++i) {
+        auto& nodes = batchTasks[i].first;
+        auto coalCount = batchTasks[i].second;
+        const Mutation& mutation = mutations[i];
+        if (nodes.size() == 1) {
+            grg->addMutation(mutation, nodes[0]);
+        } else {
+            NodeID nid = grg->makeNode(1, true);
+            grg->addMutation(mutation, nid);
+            added.push_back(nid);
+            for (auto ptr : nodes) {
+                grg->connect(nid, ptr);
+            }
+            grg->setNumIndividualCoals(nid, coalCount);
+        }
+    }
+
+    return added;
+}
+
 // Tracking individual coalescence is a bit spread out, but I think it is the most efficient way to do it.
 // 1. Above, when searching for candidate nodes in the existing hierarchy, any node that does not have its
 //    coalescence info computed will be computed and stored.
@@ -520,7 +563,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
     // nodes of interest, and collect all nodes that reach a subset of those nodes.
 
     // --- begin batching loop ---
-    const size_t BATCH_SIZE = 1;
+    const size_t BATCH_SIZE = 4;
     size_t _ignored = 0;
     MutationAndSamples unmapped;
 
@@ -551,7 +594,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
 
         for (size_t i = 0; i < batchM.size(); ++i) {
             NodeIDList added =
-                process_batch(grg, sampleCounts, std::vector<Mutation>{batchM[i]}, batchS[i], stats, shapeNodeIdMax);
+                process_batch_par(grg, sampleCounts, std::vector<Mutation>{batchM[i]}, batchS[i], stats, shapeNodeIdMax);
 
             std::vector<NodeID> newNodes;
             // add relevant nodes
