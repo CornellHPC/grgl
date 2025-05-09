@@ -311,7 +311,7 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
         stats.singletonSampleEdges++;
     }
     // This node needs to be last, for the way we update things.
-    return {newNodeList, numCoals};
+    return std::make_pair(std::move(newNodeList), numCoals);
 }
 
 static NodeIDList process_batch(const MutableGRGPtr& grg,
@@ -363,8 +363,8 @@ static NodeIDList process_batch_par(const MutableGRGPtr& grg,
         });
     }
 
-    for (auto& threads : threads) {
-        threads.join();
+    for (auto& thread : threads) {
+        thread.join();
     }
 
     NodeIDList added;
