@@ -317,14 +317,14 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
 static NodeIDList process_batch(const MutableGRGPtr& grg,
                                 const std::vector<NodeIDSizeT>& sampleCounts,
                                 const std::vector<Mutation>& mutations,
-                                const NodeIDList& mutSamples,
+                                const std::vector<NodeIDList>& mutSamples,
                                 MutationMappingStats& stats,
                                 const NodeID shapeNodeIdMax) {
     int batch_size = mutations.size();
     std::vector<std::pair<NodeIDList, NodeIDSizeT>> batch_tasks(batch_size);
 
     for (int i = 0; i < batch_size; i++) {
-        batch_tasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples, stats, shapeNodeIdMax, i);
+        batch_tasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], stats, shapeNodeIdMax, i);
     }
 
     std::vector<NodeID> addedNodes{};
@@ -349,7 +349,7 @@ static NodeIDList process_batch(const MutableGRGPtr& grg,
 static NodeIDList process_batch_par(const MutableGRGPtr& grg,
                                     const std::vector<NodeIDSizeT>& sampleCounts,
                                     const std::vector<Mutation>& mutations,
-                                    const NodeIDList& mutSamples,
+                                    const std::vector<NodeIDList>& mutSamples,
                                     MutationMappingStats& stats,
                                     const NodeID shapeNodeIdMax) {
     int batch_size = mutations.size();
@@ -359,7 +359,7 @@ static NodeIDList process_batch_par(const MutableGRGPtr& grg,
     threads.reserve(batch_size);
     for (int i = 0; i < batch_size; ++i) {
         threads.emplace_back([&, i]() {
-            batchTasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples, stats, shapeNodeIdMax, i);
+            batchTasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], stats, shapeNodeIdMax, i);
         });
     }
 
@@ -572,7 +572,6 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
         std::vector<Mutation> batchM;
         std::vector<NodeIDList> batchS;
         batchM.reserve(BATCH_SIZE);
-        batchS.reserve(BATCH_SIZE);
 
         for (size_t i = 0; i < BATCH_SIZE && mutations.next(unmapped, _ignored); i++) {
             if (unmapped.samples.empty()) {
@@ -592,41 +591,41 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
             break;
         }
 
-        for (size_t i = 0; i < batchM.size(); ++i) {
-            NodeIDList added =
-                process_batch_par(grg, sampleCounts, std::vector<Mutation>{batchM[i]}, batchS[i], stats, shapeNodeIdMax);
-
-            std::vector<NodeID> newNodes;
-            // add relevant nodes
-            for (auto nodeId : added) {
-                if (nodeId >= shapeNodeIdMax) {
-                    newNodes.push_back(nodeId);
+        NodeIDList added = process_batch_par(grg, sampleCounts, batchM, batchS, stats, shapeNodeIdMax);
+        std::vector<NodeID> newNodes;
+        // add relevant nodes
+        for (auto nodeId : added) {
+            if (nodeId >= shapeNodeIdMax) {
+                newNodes.push_back(nodeId);
+            }
+        }
+        if (!newNodes.empty()) {
+            size_t oldSize = sampleCounts.size();
+            sampleCounts.resize(oldSize + newNodes.size());
+            for (auto nodeId : newNodes) {
+                NodeIDSizeT sumSamples = 0;
+                for (auto child : grg->getDownEdges(nodeId)) {
+                    sumSamples += sampleCounts[child];
                 }
+                sampleCounts[nodeId] = sumSamples;
             }
-            if (!newNodes.empty()) {
-                size_t oldSize = sampleCounts.size();
-                sampleCounts.resize(oldSize + newNodes.size());
-                for (auto nodeId : newNodes) {
-                    NodeIDSizeT sumSamples = 0;
-                    for (auto child : grg->getDownEdges(nodeId)) {
-                        sumSamples += sampleCounts[child];
-                    }
-                    sampleCounts[nodeId] = sumSamples;
-                }
-            }
-            completed++;
+        }
+        size_t before = completed;
+        completed += batchM.size();
 
-            const size_t percentCompleted = (completed / onePercent);
-            if ((completed % onePercent == 0)) {
-                std::cout << percentCompleted << "% done" << std::endl;
+        for (size_t k = 0; k < batchM.size(); ++k) {
+            size_t idx = before + k + 1;
+
+            if ((idx % onePercent) == 0) {
+                std::cout << (idx / onePercent) << "% done\n";
             }
-            if ((completed % (EMIT_STATS_AT_PERCENT * onePercent) == 0)) {
-                std::cout << "Last mutation sampleset size: " << lastSamplesetSize << std::endl;
-                std::cout << "GRG nodes: " << grg->numNodes() << std::endl;
-                std::cout << "GRG edges: " << grg->numEdges() << std::endl;
+            if ((idx % (EMIT_STATS_AT_PERCENT * onePercent)) == 0) {
+                std::cout << "Last mutation sampleset size: " << lastSamplesetSize << "\n";
+                std::cout << "GRG nodes: " << grg->numNodes() << "\n";
+                std::cout << "GRG edges: " << grg->numEdges() << "\n";
                 stats.print(std::cout);
             }
-            if ((completed % (COMPACT_EDGES_AT_PERCENT * onePercent) == 0)) {
+            if ((idx % (COMPACT_EDGES_AT_PERCENT * onePercent)) == 0) {
                 START_TIMING_OPERATION();
                 grg->compact();
                 EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
