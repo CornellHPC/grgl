@@ -218,7 +218,7 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
             if (candidateId >= shapeNodeIdMax) {
                 stats.reusedMutNodes++;
             }
-            return {{candidateId}, 0};
+            return std::make_pair(NodeIDList{candidateId}, static_cast<NodeIDSizeT>(0));
         }
     }
     NodeIDList newNodeList{};
