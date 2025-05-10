@@ -355,16 +355,33 @@ static NodeIDList process_batch_par(const MutableGRGPtr& grg,
     int batch_size = mutations.size();
     std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(batch_size);
 
+    std::vector<MutationMappingStats> localStats(batch_size);
+
     std::vector<std::thread> threads;
     threads.reserve(batch_size);
     for (int i = 0; i < batch_size; ++i) {
+        localStats[i].reuseSizeHist.resize(STATS_HIST_SIZE);
         threads.emplace_back([&, i]() {
-            batchTasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], stats, shapeNodeIdMax, i);
+            batchTasks[i] =
+                greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], localStats[i], shapeNodeIdMax, i);
         });
     }
 
     for (auto& thread : threads) {
         thread.join();
+    }
+
+    for (auto const& threadStat : localStats) {
+        stats.reusedNodes += threadStat.reusedNodes;
+        stats.reusedNodeCoverage += threadStat.reusedNodeCoverage;
+        stats.reusedExactly += threadStat.reusedExactly;
+        stats.reusedMutNodes += threadStat.reusedMutNodes;
+        stats.singletonSampleEdges += threadStat.singletonSampleEdges;
+        stats.numWithSingletons += threadStat.numWithSingletons;
+        stats.maxSingletons = std::max(stats.maxSingletons, threadStat.maxSingletons);
+        for (size_t k = 0; k < threadStat.reuseSizeHist.size(); k++) {
+            stats.reuseSizeHist[k] += threadStat.reuseSizeHist[k];
+        }
     }
 
     NodeIDList added;
