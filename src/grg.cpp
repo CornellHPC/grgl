@@ -282,10 +282,7 @@ static bool cmpNodeIdLt(const NodeID& node1, const NodeID& node2) { return node1
 // what we did previously.
 void GRG::visitTopoNodeOrdered(GRGVisitor& visitor, const TraversalDirection direction, const NodeIDList& seedList) {
     GRGPtr sharedThis = shared_from_this();
-    // std::vector<bool> yesVisit(numNodes());
-    static std::vector<bool> yesVisit;
-    yesVisit.clear();
-    yesVisit.resize(numNodes());
+    std::vector<bool> yesVisit(numNodes());
     for (const auto& seedId : seedList) {
         yesVisit.at(seedId) = true;
     }
