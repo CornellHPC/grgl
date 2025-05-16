@@ -1546,7 +1546,7 @@ public:
             const SampleT numSamples = this->numSamples();
             const SampleT readAmount = picovcf_div_ceiling<SampleT, 8>(numSamples);
             PICOVCF_RELEASE_ASSERT(readAmount > 0);
-            std::unique_ptr<uint8_t> buffer(new uint8_t[readAmount]);
+            std::unique_ptr<uint8_t[]> buffer(new uint8_t[readAmount]);
             if (buffer) {
                 m_infile.read(reinterpret_cast<char*>(buffer.get()), readAmount);
                 PICOVCF_GOOD_OR_API_MISUSE(m_infile);
