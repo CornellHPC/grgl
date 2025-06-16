@@ -25,6 +25,7 @@
 #include "util.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <iostream>
 #include <unordered_map>
 #include <vector>
@@ -186,7 +187,7 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
                                                                      const NodeIDList& mutSamples,
                                                                      MutationMappingStats& stats,
                                                                      const NodeID shapeNodeIdMax,
-                                                                     const int batchCount) {
+                                                                     const size_t batchCount) {
     // The topological order of nodeIDs is maintained through-out this algorithm, because newly added
     // nodes are only ever _root nodes_ (at the time they are added).
     release_assert(grg->nodesAreOrdered());
@@ -314,6 +315,7 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
     return std::make_pair(std::move(newNodeList), numCoals);
 }
 
+/*
 static NodeIDList process_batch(const MutableGRGPtr& grg,
                                 const std::vector<NodeIDSizeT>& sampleCounts,
                                 const std::vector<Mutation>& mutations,
@@ -345,25 +347,72 @@ static NodeIDList process_batch(const MutableGRGPtr& grg,
     }
     return addedNodes;
 }
+*/
 
-static NodeIDList process_batch_par(const MutableGRGPtr& grg,
-                                    const std::vector<NodeIDSizeT>& sampleCounts,
-                                    const std::vector<Mutation>& mutations,
-                                    const std::vector<NodeIDList>& mutSamples,
-                                    MutationMappingStats& stats,
-                                    const NodeID shapeNodeIdMax) {
-    int batch_size = mutations.size();
-    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(batch_size);
+/// Serially apply all batched mutation mapping modifications to the grg
+static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
+                                          const std::vector<std::pair<NodeIDList, NodeIDSizeT>>& batchResults,
+                                          const std::vector<Mutation>& mutations) {
+    NodeIDList added;
+    size_t numMutations = mutations.size();
+    for (size_t i = 0; i < numMutations; ++i) {
+        const auto& nodes = batchResults[i].first;
+        NodeIDSizeT coalCount = batchResults[i].second;
+        const Mutation& mut = mutations[i];
+        if (nodes.size() == 1) {
+            grg->addMutation(mut, nodes[0]);
+        } else {
+            NodeID nid = grg->makeNode(1, true);
+            grg->addMutation(mut, nid);
+            added.push_back(nid);
+            for (auto ptr : nodes) {
+                grg->connect(nid, ptr);
+            }
+            grg->setNumIndividualCoals(nid, coalCount);
+        }
+    }
+    return added;
+}
 
-    std::vector<MutationMappingStats> localStats(batch_size);
+/**
+ * Parallel batch mapping of mutations into the GRG.
+ *
+ * Spawns threads. Each thread processes its own portion of the mutations vector
+ * containing batchSize mutations and calls greedyAddMutationImmutable() on each
+ * mutation to find/reuse candidate nodes. then, main thread serially applies all
+ * results (adds nodes & edges) once threads join. Threads only read the GRG, and
+ * all structural edits happen single-threaded afterward, so it’s race-free.
+ *
+ * Requires that mutations.size() % batchSize == 0
+ */
+static NodeIDList processBatchPar(const MutableGRGPtr& grg,
+                                  const std::vector<NodeIDSizeT>& sampleCounts,
+                                  const std::vector<Mutation>& mutations,
+                                  const std::vector<NodeIDList>& mutSamples,
+                                  const size_t batchSize,
+                                  MutationMappingStats& stats,
+                                  const NodeID shapeNodeIdMax) {
+    size_t numMutations = mutations.size();
+
+    // compute the ceiling of number of threads
+    size_t numThreads = (numMutations + batchSize - 1) / batchSize;
+
+    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(numMutations);
+
+    std::vector<MutationMappingStats> localStats(numMutations);
 
     std::vector<std::thread> threads;
-    threads.reserve(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        localStats[i].reuseSizeHist.resize(STATS_HIST_SIZE);
-        threads.emplace_back([&, i]() {
-            batchTasks[i] =
-                greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], localStats[i], shapeNodeIdMax, i);
+    threads.reserve(numThreads);
+    for (size_t i = 0; i < numThreads; ++i) {
+        size_t start = i * batchSize;
+        size_t end = std::min(start + batchSize, numMutations);
+
+        threads.emplace_back([&, start, end]() {
+            for (size_t adjIdx = start; adjIdx < end; ++adjIdx) {
+                localStats[adjIdx].reuseSizeHist.resize(STATS_HIST_SIZE);
+                batchTasks[adjIdx] = greedyAddMutationImmutable(
+                    grg, sampleCounts, mutSamples[adjIdx], localStats[adjIdx], shapeNodeIdMax, adjIdx);
+            }
         });
     }
 
@@ -384,27 +433,11 @@ static NodeIDList process_batch_par(const MutableGRGPtr& grg,
         }
     }
 
-    NodeIDList added;
-    for (int i = 0; i < batch_size; ++i) {
-        auto& nodes = batchTasks[i].first;
-        auto coalCount = batchTasks[i].second;
-        const Mutation& mutation = mutations[i];
-        if (nodes.size() == 1) {
-            grg->addMutation(mutation, nodes[0]);
-        } else {
-            NodeID nid = grg->makeNode(1, true);
-            grg->addMutation(mutation, nid);
-            added.push_back(nid);
-            for (auto ptr : nodes) {
-                grg->connect(nid, ptr);
-            }
-            grg->setNumIndividualCoals(nid, coalCount);
-        }
-    }
-
+    NodeIDList added = applyBatchModifications(grg, batchTasks, mutations);
     return added;
 }
 
+/*
 // Tracking individual coalescence is a bit spread out, but I think it is the most efficient way to do it.
 // 1. Above, when searching for candidate nodes in the existing hierarchy, any node that does not have its
 //    coalescence info computed will be computed and stored.
@@ -541,8 +574,21 @@ static NodeIDList greedyAddMutation(const MutableGRGPtr& grg,
     addedNodes.push_back(mutNodeId);
     return addedNodes;
 }
+*/
 
-MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations) {
+/**
+ * Top-level entry point for mapping mutations to a GRG in parallel.
+ *
+ * Divides mutations into batches, processes them in parallel using
+ * process_batch_par(), spawning num_threads threads which each compute
+ * graph modifications for batchSize mutations. It then merges
+ * all of these modifications into the graph serially.
+ *
+ */
+MutationMappingStats mapMutations(const MutableGRGPtr& grg,
+                                  MutationIterator& mutations,
+                                  const size_t numThreads,
+                                  const size_t batchSize) {
     auto operationStartTime = std::chrono::high_resolution_clock::now();
 #define START_TIMING_OPERATION() operationStartTime = std::chrono::high_resolution_clock::now();
 #define EMIT_TIMING_MESSAGE(msg)                                                                                       \
@@ -580,7 +626,6 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
     // nodes of interest, and collect all nodes that reach a subset of those nodes.
 
     // --- begin batching loop ---
-    const size_t BATCH_SIZE = 4;
     size_t _ignored = 0;
     MutationAndSamples unmapped;
 
@@ -588,16 +633,17 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
     while (true) {
         std::vector<Mutation> batchM;
         std::vector<NodeIDList> batchS;
-        batchM.reserve(BATCH_SIZE);
+        size_t muts_per_batch = numThreads * batchSize;
+        batchM.reserve(muts_per_batch);
 
-        for (size_t i = 0; i < BATCH_SIZE && mutations.next(unmapped, _ignored); i++) {
+        for (size_t i = 0; i < muts_per_batch && mutations.next(unmapped, _ignored); i++) {
             if (unmapped.samples.empty()) {
                 lastSamplesetSize = unmapped.samples.size();
                 stats.emptyMutations++;
                 grg->addMutation(unmapped.mutation, INVALID_NODE_ID);
             } else {
                 batchM.push_back(unmapped.mutation);
-                batchS.push_back(unmapped.samples);
+                batchS.push_back(std::move(unmapped.samples));
                 stats.samplesProcessed += unmapped.samples.size();
                 if (unmapped.samples.size() == 1) {
                     stats.mutationsWithOneSample++;
@@ -608,7 +654,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
             break;
         }
 
-        NodeIDList added = process_batch_par(grg, sampleCounts, batchM, batchS, stats, shapeNodeIdMax);
+        NodeIDList added = processBatchPar(grg, sampleCounts, batchM, batchS, batchSize, stats, shapeNodeIdMax);
         std::vector<NodeID> newNodes;
         // add relevant nodes
         for (auto nodeId : added) {
@@ -644,6 +690,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
             }
             if ((idx % (COMPACT_EDGES_AT_PERCENT * onePercent)) == 0) {
                 START_TIMING_OPERATION();
+                std::cout << "COMPACTING: nodes = " << grg->numNodes() << ", edges = " << grg->numEdges() << "\n";
                 grg->compact();
                 EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
             }
