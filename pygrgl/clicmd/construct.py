@@ -49,6 +49,18 @@ def add_options(subparser):
         help="Number of jobs (threads/cores) to use. Defaults to 1.",
     )
     subparser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Number of threads to use for mutation‐mapping (--map-muts).",
+    );
+    subparser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Number of mutations each thread will process per batch when mapping.",
+    );
+    subparser.add_argument(
         "--trees",
         "-t",
         type=int,
@@ -91,6 +103,7 @@ def add_options(subparser):
         default=0,
         help="Run the triplet algorithm for this many iterations in BuildShape",
     )
+
     subparser.add_argument(
         "--out-file",
         "-o",
