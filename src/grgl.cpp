@@ -131,6 +131,16 @@ int main(int argc, char** argv) {
         "jobs",
         "Use this many threads for the given task. Currently only applies to the --split command",
         {'j', "jobs"});
+
+    args::ValueFlag<size_t> threadsArg(
+        parser, "threads", "Number of threads to use for batched mutation mapping (default: 1)", {"threads"});
+
+    args::ValueFlag<size_t> batchSizeArg(
+        parser,
+        "batch-size",
+        "Number of mutations each thread should process per batch when mapping mutations (default: 1)",
+        {"batch-size"});
+
     try {
         parser.ParseCLI(argc, argv);
     } catch (args::Help&) {
@@ -251,8 +261,11 @@ int main(int argc, char** argv) {
             std::cerr << "Could not load mutations file " << *mapMutations << std::endl;
             return 1;
         }
+
+        const size_t numThreads = threadsArg ? *threadsArg : 1;
+        const size_t batchSize = batchSizeArg ? *batchSizeArg : 1;
         grgl::MutationMappingStats stats;
-        stats = grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG), *unmappedMutations);
+        stats = grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG), *unmappedMutations, numThreads, batchSize);
         EMIT_TIMING_MESSAGE("Mapping mutations took");
         std::cout << std::endl;
         std::cout << "=== Stats ===" << std::endl;
