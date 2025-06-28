@@ -213,6 +213,8 @@ def build_grg(range_triple, args, input_file):
     )
     if args.binary_muts:
         command.append("-b")
+
+    command += ["--batch-size", str(args.batch_size), "--threads", str(args.threads)]
     print(command)
     map_time = time_call(command, stdout=sys.stdout)
     log_time("MAP_MUTS_TIME", map_time, args.verbose)
