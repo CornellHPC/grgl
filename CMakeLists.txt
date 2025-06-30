@@ -40,6 +40,11 @@ else()
   check_cxx_compiler_flag(-mavx2 COMPILER_SUPPORTS_AVX2)
 endif()
 
+find_package(OpenMP REQUIRED)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(grgl PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 # The current potential use for AVX (beyond libvbyte, which is enabled elsewhere) is not
 # sufficient performance improvement to enable. Enabling means we should support dynamic
 # detection as well, since the Python bdist's are built with AVX available.
