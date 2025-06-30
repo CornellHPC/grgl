@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iostream>
+#include <omp.h>
 #include <unordered_map>
 #include <vector>
 
@@ -377,49 +378,44 @@ static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
 /**
  * Parallel batch mapping of mutations into the GRG.
  *
- * Spawns threads. Each thread processes its own portion of the mutations vector
- * containing batchSize mutations and calls greedyAddMutationImmutable() on each
- * mutation to find/reuse candidate nodes. then, main thread serially applies all
+ * Uses an OpenMP threadpool to process all the mutations in mutations. Each thread
+ * processes a mutation, then rejoins the pool.
+ * then, main thread serially applies all
  * results (adds nodes & edges) once threads join. Threads only read the GRG, and
  * all structural edits happen single-threaded afterward, so it’s race-free.
- *
- * Requires that mutations.size() % batchSize == 0
+ * 
+ * Note that this overrides the OMP_NUM_THREADS variable
  */
 static NodeIDList processBatchPar(const MutableGRGPtr& grg,
                                   const std::vector<NodeIDSizeT>& sampleCounts,
                                   const std::vector<Mutation>& mutations,
                                   const std::vector<NodeIDList>& mutSamples,
-                                  const size_t batchSize,
+                                  const size_t numThreads,
                                   MutationMappingStats& stats,
                                   const NodeID shapeNodeIdMax) {
-    size_t numMutations = mutations.size();
+    size_t batchSize = mutations.size();
 
-    // compute the ceiling of number of threads
-    size_t numThreads = (numMutations + batchSize - 1) / batchSize;
+    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(batchSize);
 
-    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(numMutations);
+    std::vector<MutationMappingStats> localStats(batchSize);
 
-    std::vector<MutationMappingStats> localStats(numMutations);
+    omp_set_num_threads((int)numThreads);
+#pragma omp parallel
+    {
+#pragma omp single
+        {
+            for (size_t i = 0; i < batchSize; ++i) {
+#pragma omp task firstprivate(i)
+                {
+                    localStats[i].reuseSizeHist.resize(STATS_HIST_SIZE);
 
-    std::vector<std::thread> threads;
-    threads.reserve(numThreads);
-    for (size_t i = 0; i < numThreads; ++i) {
-        size_t start = i * batchSize;
-        size_t end = std::min(start + batchSize, numMutations);
-
-        threads.emplace_back([&, start, end]() {
-            for (size_t adjIdx = start; adjIdx < end; ++adjIdx) {
-                localStats[adjIdx].reuseSizeHist.resize(STATS_HIST_SIZE);
-                batchTasks[adjIdx] = greedyAddMutationImmutable(
-                    grg, sampleCounts, mutSamples[adjIdx], localStats[adjIdx], shapeNodeIdMax, adjIdx);
+                    batchTasks[i] =
+                        greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], localStats[i], shapeNodeIdMax, i);
+                }
             }
-        });
+#pragma omp taskwait
+        }
     }
-
-    for (auto& thread : threads) {
-        thread.join();
-    }
-
     for (auto const& threadStat : localStats) {
         stats.reusedNodes += threadStat.reusedNodes;
         stats.reusedNodeCoverage += threadStat.reusedNodeCoverage;
@@ -585,10 +581,8 @@ static NodeIDList greedyAddMutation(const MutableGRGPtr& grg,
  * all of these modifications into the graph serially.
  *
  */
-MutationMappingStats mapMutations(const MutableGRGPtr& grg,
-                                  MutationIterator& mutations,
-                                  const size_t numThreads,
-                                  const size_t batchSize) {
+MutationMappingStats
+mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t numThreads, const size_t batchSize) {
     auto operationStartTime = std::chrono::high_resolution_clock::now();
 #define START_TIMING_OPERATION() operationStartTime = std::chrono::high_resolution_clock::now();
 #define EMIT_TIMING_MESSAGE(msg)                                                                                       \
@@ -633,10 +627,9 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg,
     while (true) {
         std::vector<Mutation> batchM;
         std::vector<NodeIDList> batchS;
-        size_t muts_per_batch = numThreads * batchSize;
-        batchM.reserve(muts_per_batch);
+        batchM.reserve(batchSize);
 
-        for (size_t i = 0; i < muts_per_batch && mutations.next(unmapped, _ignored); i++) {
+        for (size_t i = 0; i < batchSize && mutations.next(unmapped, _ignored); i++) {
             if (unmapped.samples.empty()) {
                 lastSamplesetSize = unmapped.samples.size();
                 stats.emptyMutations++;
@@ -654,7 +647,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg,
             break;
         }
 
-        NodeIDList added = processBatchPar(grg, sampleCounts, batchM, batchS, batchSize, stats, shapeNodeIdMax);
+        NodeIDList added = processBatchPar(grg, sampleCounts, batchM, batchS, numThreads, stats, shapeNodeIdMax);
         std::vector<NodeID> newNodes;
         // add relevant nodes
         for (auto nodeId : added) {
