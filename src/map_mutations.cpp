@@ -627,7 +627,6 @@ mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t
     while (true) {
         std::vector<Mutation> batchM;
         std::vector<NodeIDList> batchS;
-        batchM.reserve(batchSize);
 
         for (size_t i = 0; i < batchSize && mutations.next(unmapped, _ignored); i++) {
             if (unmapped.samples.empty()) {
