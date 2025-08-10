@@ -414,7 +414,6 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
 
     omp_set_num_threads((int)numThreads);
 
-    timing.taskMs = 0.0;
 #pragma omp parallel
     {
 #pragma omp single
@@ -441,7 +440,7 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
     auto addMutationt1 = std::chrono::high_resolution_clock::now();
 
     double addMutMs = std::chrono::duration<double, std::milli>(addMutationt1 - t0).count();
-    timing.addMutMs = addMutMs;
+    timing.addMutMs += addMutMs;
 
     auto applyt0 = std::chrono::high_resolution_clock::now();
     for (auto const& threadStat : localStats) {
@@ -460,9 +459,9 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double applyMs = std::chrono::duration<double, std::milli>(t1 - applyt0).count();
-    timing.applyBatchMs = applyMs;
+    timing.applyBatchMs += applyMs;
     double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    timing.overallMs = totalMs;
+    timing.overallMs += totalMs;
     return added;
 }
 
@@ -727,11 +726,11 @@ mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t
     double overheadMs = timing.addMutMs - timing.taskMs;
 
     std::cout << "\n=== mapMutations overhead ===\n"
-              << "  Total time in greedyAddMutation:   " << timing.taskMs << " ms\n"
-              << "  Total task-region wall-clock:     " << timing.addMutMs << " ms\n"
-              << "  Total overhead:        " << overheadMs << " ms\n"
+              << "  Total time spent in threaded tasks: " << timing.taskMs << " ms\n"
+              << "  Total time spent in mutation gathering: " << timing.addMutMs << " ms\n"
+              << "  Total overhead: " << overheadMs << " ms\n"
               << "  Time applying batch modifications: " << timing.applyBatchMs << " ms\n"
-              << "  End-to-end processBatchPar total:  " << timing.overallMs << " ms\n"
+              << "  Total mapmutations runtime: " << timing.overallMs << " ms\n"
               << "===============================\n\n";
 
     return stats;
