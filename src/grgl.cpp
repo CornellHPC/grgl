@@ -133,13 +133,7 @@ int main(int argc, char** argv) {
         {'j', "jobs"});
 
     args::ValueFlag<size_t> threadsArg(
-        parser, "threads", "Number of threads to use for batched mutation mapping (default: 1)", {"threads"});
-
-    args::ValueFlag<size_t> batchSizeArg(
-        parser,
-        "batch-size",
-        "Number of mutations each thread should process per batch when mapping mutations (default: 1)",
-        {"batch-size"});
+        parser, "threads", "Number of threads to use for parallel mutation mapping (default: 1)", {"threads"});
 
     try {
         parser.ParseCLI(argc, argv);
@@ -263,9 +257,8 @@ int main(int argc, char** argv) {
         }
 
         const size_t numThreads = threadsArg ? *threadsArg : 1;
-        const size_t batchSize = batchSizeArg ? *batchSizeArg : 1;
         grgl::MutationMappingStats stats;
-        stats = grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG), *unmappedMutations, numThreads, batchSize);
+        stats = grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG), *unmappedMutations, numThreads);
         EMIT_TIMING_MESSAGE("Mapping mutations took");
         std::cout << std::endl;
         std::cout << "=== Stats ===" << std::endl;

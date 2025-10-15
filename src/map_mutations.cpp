@@ -24,9 +24,10 @@
 #include "grgl/mutation.h"
 #include "grgl/visitor.h"
 #include "util.h"
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 
-#include <algorithm>
 #include <cstddef>
 #include <iostream>
 #include <omp.h>
@@ -189,7 +190,6 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
                                                                      const std::vector<NodeIDSizeT>& sampleCounts,
                                                                      const NodeIDList& mutSamples,
                                                                      MutationMappingStats& stats,
-                                                                     const NodeID shapeNodeIdMax,
                                                                      const size_t batchCount) {
     // The topological order of nodeIDs is maintained through-out this algorithm, because newly added
     // nodes are only ever _root nodes_ (at the time they are added).
@@ -218,10 +218,10 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
         if (candidateSetSize == mutSamples.size()) {
             const auto candidateId = std::get<0>(candidate);
             stats.reusedExactly++;
-            // grg->addMutation(newMutation, candidateId);
-            if (candidateId >= shapeNodeIdMax) {
-                stats.reusedMutNodes++;
-            }
+            // Note that, because of our batching scheme, reusedMutNodes is exactly zero.
+            //    if (candidateId >= shapeNodeIdMax) {
+            //        stats.reusedMutNodes++;
+            //    }
             return std::make_pair(NodeIDList{candidateId}, static_cast<NodeIDSizeT>(0));
         }
     }
@@ -230,7 +230,6 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
     // Map from an individual to which child contained it.
     std::unordered_map<NodeIDSizeT, NodeIDSizeT> individualToChild;
     // const NodeID mutNodeId = grg->makeNode(1, true);
-    // grg->addMutation(newMutation, mutNodeId);
     NodeIDList addedNodes;
     const size_t numMutSamples = mutSamples.size();
     while (!candidates.empty() && covered.size() < numMutSamples) {
@@ -260,9 +259,10 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
                     }
                 }
             }
-            if (candidateId >= shapeNodeIdMax) {
-                stats.reusedMutNodes++;
-            }
+            // Again, this check is unnecessary now
+            // if (candidateId >= shapeNodeIdMax) {
+            //     stats.reusedMutNodes++;
+            // }
 
             // Use this candidate (or the nodes below it) to cover the sample subset.
             stats.reusedNodes++;
@@ -298,16 +298,13 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
     NodeIDSizeT numCoals = 0;
     if (ploidy == 2) {
         numCoals = individualCoalCount;
-        // grg->setNumIndividualCoals(mutNodeId, individualCoalCount);
     }
 
     if (!uncovered.empty()) {
         stats.numWithSingletons++;
     }
 
-    if (uncovered.size() > stats.maxSingletons) {
-        stats.maxSingletons = uncovered.size();
-    }
+    stats.maxSingletons = std::max(uncovered.size(), stats.maxSingletons);
 
     for (auto sampleNodeId : uncovered) {
         newNodeList.push_back(sampleNodeId);
@@ -317,40 +314,6 @@ static std::pair<NodeIDList, NodeIDSizeT> greedyAddMutationImmutable(const Mutab
     // This node needs to be last, for the way we update things.
     return std::make_pair(std::move(newNodeList), numCoals);
 }
-
-/*
-static NodeIDList process_batch(const MutableGRGPtr& grg,
-                                const std::vector<NodeIDSizeT>& sampleCounts,
-                                const std::vector<Mutation>& mutations,
-                                const std::vector<NodeIDList>& mutSamples,
-                                MutationMappingStats& stats,
-                                const NodeID shapeNodeIdMax) {
-    int batch_size = mutations.size();
-    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batch_tasks(batch_size);
-
-    for (int i = 0; i < batch_size; i++) {
-        batch_tasks[i] = greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], stats, shapeNodeIdMax, i);
-    }
-
-    std::vector<NodeID> addedNodes{};
-    for (int i = 0; i < batch_size; i++) {
-        const NodeIDList& nodes = batch_tasks[i].first;
-        NodeIDSizeT coalCount = batch_tasks[i].second;
-        if (nodes.size() == 1) {
-            grg->addMutation(mutations[i], nodes[0]);
-        } else {
-            const NodeID mutNodeId = grg->makeNode(1, true);
-            grg->addMutation(mutations[i], mutNodeId);
-            addedNodes.push_back(mutNodeId);
-            for (auto candidateNodeID : nodes) {
-                grg->connect(mutNodeId, candidateNodeID);
-            }
-            grg->setNumIndividualCoals(mutNodeId, coalCount);
-        }
-    }
-    return addedNodes;
-}
-*/
 
 /// Serially apply all batched mutation mapping modifications to the grg
 static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
@@ -377,232 +340,6 @@ static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
     return added;
 }
 
-/**
- * Parallel batch mapping of mutations into the GRG.
- *
- * Uses an OpenMP threadpool to process all the mutations in mutations. Each thread
- * processes a mutation, then rejoins the pool.
- * then, main thread serially applies all
- * results (adds nodes & edges) once threads join. Threads only read the GRG, and
- * all structural edits happen single-threaded afterward, so it’s race-free.
- *
- * Note that this overrides the OMP_NUM_THREADS variable
- */
-
-struct TimingStats {
-    double overallMs = 0.0;
-    double addMutMs = 0.0;
-    double taskMs = 0.0;
-    double applyBatchMs = 0.0;
-};
-
-static NodeIDList processBatchPar(const MutableGRGPtr& grg,
-                                  const std::vector<NodeIDSizeT>& sampleCounts,
-                                  const std::vector<Mutation>& mutations,
-                                  const std::vector<NodeIDList>& mutSamples,
-                                  const size_t numThreads,
-                                  MutationMappingStats& stats,
-                                  TimingStats& timing,
-                                  const NodeID shapeNodeIdMax) {
-    auto t0 = std::chrono::high_resolution_clock::now();
-
-    size_t batchSize = mutations.size();
-
-    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(batchSize);
-
-    std::vector<MutationMappingStats> localStats(batchSize);
-
-    omp_set_num_threads((int)numThreads);
-
-#pragma omp parallel
-    {
-#pragma omp single
-        {
-            for (size_t i = 0; i < batchSize; ++i) {
-#pragma omp task firstprivate(i)
-                {
-
-                    auto taskt0 = std::chrono::high_resolution_clock::now();
-                    localStats[i].reuseSizeHist.resize(STATS_HIST_SIZE);
-
-                    batchTasks[i] =
-                        greedyAddMutationImmutable(grg, sampleCounts, mutSamples[i], localStats[i], shapeNodeIdMax, i);
-
-                    auto taskt1 = std::chrono::high_resolution_clock::now();
-                    double msGreedy = std::chrono::duration<double, std::milli>(taskt1 - taskt0).count();
-#pragma omp atomic
-                    timing.taskMs += msGreedy;
-                }
-            }
-#pragma omp taskwait
-        }
-    }
-    auto addMutationt1 = std::chrono::high_resolution_clock::now();
-
-    double addMutMs = std::chrono::duration<double, std::milli>(addMutationt1 - t0).count();
-    timing.addMutMs += addMutMs;
-
-    auto applyt0 = std::chrono::high_resolution_clock::now();
-    for (auto const& threadStat : localStats) {
-        stats.reusedNodes += threadStat.reusedNodes;
-        stats.reusedNodeCoverage += threadStat.reusedNodeCoverage;
-        stats.reusedExactly += threadStat.reusedExactly;
-        stats.reusedMutNodes += threadStat.reusedMutNodes;
-        stats.singletonSampleEdges += threadStat.singletonSampleEdges;
-        stats.numWithSingletons += threadStat.numWithSingletons;
-        stats.maxSingletons = std::max(stats.maxSingletons, threadStat.maxSingletons);
-        for (size_t k = 0; k < threadStat.reuseSizeHist.size(); k++) {
-            stats.reuseSizeHist[k] += threadStat.reuseSizeHist[k];
-        }
-    }
-    NodeIDList added = applyBatchModifications(grg, batchTasks, mutations);
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double applyMs = std::chrono::duration<double, std::milli>(t1 - applyt0).count();
-    timing.applyBatchMs += applyMs;
-    double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    timing.overallMs += totalMs;
-    return added;
-}
-
-/*
-// Tracking individual coalescence is a bit spread out, but I think it is the most efficient way to do it.
-// 1. Above, when searching for candidate nodes in the existing hierarchy, any node that does not have its
-//    coalescence info computed will be computed and stored.
-// 2. Below, when we connect two candidate nodes together we will look for any coalescences between them.
-// 3. Below, when we have "left-over" samples that did not have any candidate nodes, we will check for any
-//    coalescence within the left-over samples, or between the left-over samples and nodes that have already
-//    been covered.
-
-static NodeIDList greedyAddMutation(const MutableGRGPtr& grg,
-                                    const std::vector<NodeIDSizeT>& sampleCounts,
-                                    const Mutation& newMutation,
-                                    const NodeIDList& mutSamples,
-                                    MutationMappingStats& stats,
-                                    const NodeID shapeNodeIdMax) {
-    // The topological order of nodeIDs is maintained through-out this algorithm, because newly added
-    // nodes are only ever _root nodes_ (at the time they are added).
-    release_assert(grg->nodesAreOrdered());
-
-    const size_t ploidy = grg->getPloidy();
-    // The set of nodes that we have covered so far (greedily extended)
-    NodeIDSet covered;
-
-    TopoCandidateCollectorVisitor collector(sampleCounts);
-    if (mutSamples.size() > 1) {
-        grg->visitTopo(collector, grgl::TraversalDirection::DIRECTION_UP, mutSamples);
-    }
-    std::vector<NodeSamples>& candidates = collector.m_collectedNodes;
-    std::sort(candidates.begin(), candidates.end());
-    auto endOfUnique = std::unique(candidates.begin(), candidates.end());
-    candidates.erase(endOfUnique, candidates.end());
-    std::sort(candidates.begin(), candidates.end(), cmpNodeSamples);
-
-    if (candidates.empty()) {
-        stats.mutationsWithNoCandidates++;
-    } else {
-        // Exact match scenario. Return early.
-        const auto& candidate = candidates.back();
-        const size_t candidateSetSize = std::get<1>(candidate);
-        if (candidateSetSize == mutSamples.size()) {
-            const auto candidateId = std::get<0>(candidate);
-            stats.reusedExactly++;
-            grg->addMutation(newMutation, candidateId);
-            if (candidateId >= shapeNodeIdMax) {
-                stats.reusedMutNodes++;
-            }
-            return {};
-        }
-    }
-
-    size_t individualCoalCount = 0;
-    // Map from an individual to which child contained it.
-    std::unordered_map<NodeIDSizeT, NodeIDSizeT> individualToChild;
-    const NodeID mutNodeId = grg->makeNode(1, true);
-    grg->addMutation(newMutation, mutNodeId);
-    NodeIDList addedNodes;
-    const size_t numMutSamples = mutSamples.size();
-    while (!candidates.empty() && covered.size() < numMutSamples) {
-        const auto& candidate = candidates.back();
-        const auto candidateId = std::get<0>(candidate);
-        const NodeIDList candidateSet = collector.getSamplesForCandidate(candidateId);
-        release_assert(!candidateSet.empty());
-        // Different candidates may cover different subsets of the sample set that
-        // we are currently trying to cover. Those sample sets MUST be non-overlapping
-        // or we will introduce a diamond into the graph:
-        //  m-->n1-->s0
-        //  m-->n2-->s0
-        // However, there is no guarantee that there does not exist nodes (n1, n2)
-        // that both point to a sample (or samples) that we care about, so we have to
-        // track that here. We do that by only considering candidates that have no overlap
-        // with our already-covered set.
-        if (!setsOverlap(covered, candidateSet)) {
-            // Mark all the sample nodes as covered.
-            for (const auto sampleId : candidateSet) {
-                covered.emplace(sampleId);
-                if (ploidy == 2) {
-                    auto insertPair = individualToChild.emplace(sampleId / ploidy, candidateId);
-                    // The individual already existed from a _different node_, so the two samples will coalesce
-                    // at the new mutation node.
-                    if (!insertPair.second && candidateId != insertPair.first->second) {
-                        individualCoalCount++;
-                    }
-                }
-            }
-            if (candidateId >= shapeNodeIdMax) {
-                stats.reusedMutNodes++;
-            }
-
-            // Use this candidate (or the nodes below it) to cover the sample subset.
-            stats.reusedNodes++;
-            grg->connect(mutNodeId, candidateId);
-            stats.reusedNodeCoverage += candidateSet.size();
-            if (candidateSet.size() >= stats.reuseSizeHist.size()) {
-                stats.reuseSizeBiggerThanHistMax++;
-            } else {
-                stats.reuseSizeHist[candidateSet.size()]++;
-            }
-        }
-        candidates.pop_back();
-    }
-
-    // Any leftovers, we just connect directly from the new mutation node to the
-    // samples.
-    NodeIDSet uncovered;
-    for (const NodeID sampleNodeId : mutSamples) {
-        const auto coveredIt = covered.find(sampleNodeId);
-        if (coveredIt == covered.end()) {
-            uncovered.emplace(sampleNodeId);
-            // The individual had already been seen and >=1 of the samples was previously uncovered,
-            // then the new node we create is going to be the coalescence location for that individual.
-            if (ploidy == 2) {
-                auto insertPair = individualToChild.emplace(sampleNodeId / ploidy, mutNodeId);
-                if (!insertPair.second) {
-                    individualCoalCount++;
-                }
-            }
-        }
-    }
-    if (ploidy == 2) {
-        grg->setNumIndividualCoals(mutNodeId, individualCoalCount);
-    }
-
-    if (!uncovered.empty()) {
-        stats.numWithSingletons++;
-    }
-    if (uncovered.size() > stats.maxSingletons) {
-        stats.maxSingletons = uncovered.size();
-    }
-
-    for (auto sampleNodeId : uncovered) {
-        grg->connect(mutNodeId, sampleNodeId);
-        stats.singletonSampleEdges++;
-    }
-    // This node needs to be last, for the way we update things.
-    addedNodes.push_back(mutNodeId);
-    return addedNodes;
-}
-*/
 
 /**
  * Top-level entry point for mapping mutations to a GRG in parallel.
@@ -613,8 +350,7 @@ static NodeIDList greedyAddMutation(const MutableGRGPtr& grg,
  * all of these modifications into the graph serially.
  *
  */
-MutationMappingStats
-mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t numThreads, const size_t batchSize) {
+MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t numThreads) {
     auto operationStartTime = std::chrono::high_resolution_clock::now();
 #define START_TIMING_OPERATION() operationStartTime = std::chrono::high_resolution_clock::now();
 #define EMIT_TIMING_MESSAGE(msg)                                                                                       \
@@ -631,6 +367,8 @@ mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t
             "mapMutations can only be used on GRGs with ordered nodes; saving/loading a GRG will do this.");
     }
 
+    omp_set_num_threads(numThreads);
+
     MutationMappingStats stats;
     stats.reuseSizeHist.resize(STATS_HIST_SIZE, 0);
     stats.totalMutations = mutations.countMutations();
@@ -642,97 +380,118 @@ mapMutations(const MutableGRGPtr& grg, MutationIterator& mutations, const size_t
 
     std::cout << "Mapping " << stats.totalMutations << " mutations\n";
     const size_t onePercent = (stats.totalMutations / ONE_HUNDRED_PERCENT) + 1;
-    size_t completed = 0;
 
+    // Note: this is made redundant by the batch application
     // The low-water mark for nodes. If a NodeID is greater than or equal to this, then it
-    // is a newly added (mutation) node.
+    // is a newly added (mutation) node. 
     const NodeID shapeNodeIdMax = grg->numNodes();
 
     // For each mutation, perform a topological bottom-up traversal from the sample
     // nodes of interest, and collect all nodes that reach a subset of those nodes.
 
-    // --- begin batching loop ---
     size_t _ignored = 0;
     MutationAndSamples unmapped;
 
-    TimingStats timing{};
-    size_t lastSamplesetSize = 0;
-    while (true) {
-        std::vector<Mutation> batchM;
-        std::vector<NodeIDList> batchS;
+    std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(stats.totalMutations);
 
-        for (size_t i = 0; i < batchSize && mutations.next(unmapped, _ignored); i++) {
-            if (unmapped.samples.empty()) {
-                lastSamplesetSize = unmapped.samples.size();
-                stats.emptyMutations++;
-                grg->addMutation(unmapped.mutation, INVALID_NODE_ID);
-            } else {
-                batchM.push_back(unmapped.mutation);
-                batchS.push_back(std::move(unmapped.samples));
-                stats.samplesProcessed += unmapped.samples.size();
-                if (unmapped.samples.size() == 1) {
-                    stats.mutationsWithOneSample++;
+    std::vector<MutationMappingStats> localStats(stats.totalMutations);
+    std::vector<Mutation> mutationList{};
+    mutationList.reserve(stats.totalMutations);
+    std::vector<Mutation> invalidMutations{};
+    size_t taskNum = 0;
+    std::atomic<int> completed(0);
+
+#pragma omp parallel
+    {
+#pragma omp single nowait
+        {
+            size_t lastSamplesetSize = 0;
+            while (mutations.next(unmapped, _ignored)) {
+                if (unmapped.samples.empty()) {
+                    // TODO: fix so there's no data races
+                    lastSamplesetSize = unmapped.samples.size();
+                    stats.emptyMutations++;
+                    invalidMutations.push_back(unmapped.mutation);
+                } else {
+                    mutationList.push_back(unmapped.mutation);
+                    stats.samplesProcessed += unmapped.samples.size();
+                    if (unmapped.samples.size() == 1) {
+                        stats.mutationsWithOneSample++;
+                    }
+
+                    NodeIDList sample = std::move(unmapped.samples);
+#pragma omp task firstprivate(taskNum, sample)
+                    {
+                        localStats[taskNum].reuseSizeHist.resize(STATS_HIST_SIZE);
+                        batchTasks[taskNum] = greedyAddMutationImmutable(
+                            grg, sampleCounts, sample, localStats[taskNum], taskNum);
+                        completed.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    taskNum++;
+
+                    size_t num_completed = completed.load() + invalidMutations.size();
+                    if ((num_completed % onePercent) == 0) {
+                        std::cout << (num_completed / onePercent) << "% done\n";
+                    }
+                    if ((num_completed % (EMIT_STATS_AT_PERCENT * onePercent)) == 0) {
+                        std::cout << "Last mutation sampleset size: " << lastSamplesetSize << "\n";
+                        std::cout << "GRG nodes: " << grg->numNodes() << "\n";
+                        std::cout << "GRG edges: " << grg->numEdges() << "\n";
+                        stats.print(std::cout);
+                    }
                 }
             }
         }
-        if (batchM.empty()) {
-            break;
-        }
 
-        NodeIDList added =
-            processBatchPar(grg, sampleCounts, batchM, batchS, numThreads, stats, timing, shapeNodeIdMax);
-        std::vector<NodeID> newNodes;
-        // add relevant nodes
-        for (auto nodeId : added) {
-            if (nodeId >= shapeNodeIdMax) {
-                newNodes.push_back(nodeId);
-            }
-        }
-        if (!newNodes.empty()) {
-            size_t oldSize = sampleCounts.size();
-            sampleCounts.resize(oldSize + newNodes.size());
-            for (auto nodeId : newNodes) {
-                NodeIDSizeT sumSamples = 0;
-                for (auto child : grg->getDownEdges(nodeId)) {
-                    sumSamples += sampleCounts[child];
-                }
-                sampleCounts[nodeId] = sumSamples;
-            }
-        }
-        size_t before = completed;
-        completed += batchM.size();
-
-        for (size_t k = 0; k < batchM.size(); ++k) {
-            size_t idx = before + k + 1;
-
-            if ((idx % onePercent) == 0) {
-                std::cout << (idx / onePercent) << "% done\n";
-            }
-            if ((idx % (EMIT_STATS_AT_PERCENT * onePercent)) == 0) {
-                std::cout << "Last mutation sampleset size: " << lastSamplesetSize << "\n";
-                std::cout << "GRG nodes: " << grg->numNodes() << "\n";
-                std::cout << "GRG edges: " << grg->numEdges() << "\n";
-                stats.print(std::cout);
-            }
-            if ((idx % (COMPACT_EDGES_AT_PERCENT * onePercent)) == 0) {
-                START_TIMING_OPERATION();
-                std::cout << "COMPACTING: nodes = " << grg->numNodes() << ", edges = " << grg->numEdges() << "\n";
-                grg->compact();
-                EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
-            }
-        }
+#pragma omp taskwait
     }
 
-    double overheadMs = timing.addMutMs - timing.taskMs;
+    batchTasks.resize(taskNum);
+    localStats.resize(taskNum);
 
-    std::cout << "\n=== mapMutations overhead ===\n"
-              << "  Total time spent in threaded tasks: " << timing.taskMs << " ms\n"
-              << "  Total time spent in mutation gathering: " << timing.addMutMs << " ms\n"
-              << "  Total overhead: " << overheadMs << " ms\n"
-              << "  Time applying batch modifications: " << timing.applyBatchMs << " ms\n"
-              << "  Total mapmutations runtime: " << timing.overallMs << " ms\n"
-              << "===============================\n\n";
+    for (auto& mutation : invalidMutations) {
+        grg->addMutation(mutation, INVALID_NODE_ID);
+    }
 
+    for (auto const& threadStat : localStats) {
+        stats.reusedNodes += threadStat.reusedNodes;
+        stats.reusedNodeCoverage += threadStat.reusedNodeCoverage;
+        stats.reusedExactly += threadStat.reusedExactly;
+        stats.reusedMutNodes += threadStat.reusedMutNodes;
+        stats.singletonSampleEdges += threadStat.singletonSampleEdges;
+        stats.numWithSingletons += threadStat.numWithSingletons;
+        stats.maxSingletons = std::max(stats.maxSingletons, threadStat.maxSingletons);
+        for (size_t k = 0; k < threadStat.reuseSizeHist.size(); k++) {
+            stats.reuseSizeHist[k] += threadStat.reuseSizeHist[k];
+        }
+    }
+    NodeIDList added = applyBatchModifications(grg, batchTasks, mutationList);
+
+    START_TIMING_OPERATION();
+    grg->compact();
+    EMIT_TIMING_MESSAGE("Compacting GRG edges took ");
+
+    std::vector<NodeID> newNodes;
+    // add relevant nodes to samplecounts
+    for (auto nodeId : added) {
+        if (nodeId >= shapeNodeIdMax) {
+            newNodes.push_back(nodeId);
+        }
+    }
+    
+    
+    if (!newNodes.empty()) {
+        size_t oldSize = sampleCounts.size();
+        sampleCounts.resize(oldSize + newNodes.size());
+        for (auto nodeId : newNodes) {
+            NodeIDSizeT sumSamples = 0;
+            for (auto child : grg->getDownEdges(nodeId)) {
+                sumSamples += sampleCounts[child];
+            }
+            sampleCounts[nodeId] = sumSamples;
+        }
+    }
     return stats;
+
 }
 }; // namespace grgl

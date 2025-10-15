@@ -53,13 +53,7 @@ def add_options(subparser):
         type=int,
         default=1,
         help="Number of threads to use for mutation‐mapping (--map-muts).",
-    );
-    subparser.add_argument(
-        "--batch-size",
-        type=int,
-        default=1,
-        help="Number of mutations each thread will process per batch when mapping.",
-    );
+    )
     subparser.add_argument(
         "--trees",
         "-t",
@@ -163,7 +157,7 @@ def build_shape(range_triple, args, input_file):
                 "-l",
                 "-s",
                 "-r",
-                f"{base}:{base+pspans}",
+                f"{base}:{base + pspans}",
                 "-o",
                 out_filename_tree(input_file, part, tnum),
             ]
@@ -214,7 +208,7 @@ def build_grg(range_triple, args, input_file):
     if args.binary_muts:
         command.append("-b")
 
-    command += ["--batch-size", str(args.batch_size), "--threads", str(args.threads)]
+    command += ["--threads", str(args.threads)]
     print(command)
     map_time = time_call(command, stdout=sys.stdout)
     log_time("MAP_MUTS_TIME", map_time, args.verbose)
