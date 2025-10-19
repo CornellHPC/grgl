@@ -432,7 +432,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
 
                     size_t numCompleted = completed.load() + invalidMutations.size();
                     if (numCompleted != 0) {
-                        size_t currPercent = numCompleted % onePercent;
+                        size_t currPercent = numCompleted / onePercent;
                         if (currPercent > prevPrintPercent) {
                             for (size_t p = prevPrintPercent + 1; p <= currPercent; p++) {
                                 std::cout << p << "% done\n";
