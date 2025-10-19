@@ -405,6 +405,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
     {
 #pragma omp single nowait
         {
+            size_t prevPrintPercent = 0;
             size_t lastSamplesetSize = 0;
             while (mutations.next(unmapped, _ignored)) {
                 if (unmapped.samples.empty()) {
@@ -429,15 +430,21 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
                     }
                     taskNum++;
 
-                    size_t num_completed = completed.load() + invalidMutations.size();
-                    if ((num_completed % onePercent) == 0) {
-                        std::cout << (num_completed / onePercent) << "% done\n";
-                    }
-                    if ((num_completed % (EMIT_STATS_AT_PERCENT * onePercent)) == 0) {
-                        std::cout << "Last mutation sampleset size: " << lastSamplesetSize << "\n";
-                        std::cout << "GRG nodes: " << grg->numNodes() << "\n";
-                        std::cout << "GRG edges: " << grg->numEdges() << "\n";
-                        stats.print(std::cout);
+                    size_t numCompleted = completed.load() + invalidMutations.size();
+                    if (numCompleted != 0) {
+                        size_t currPercent = numCompleted % onePercent;
+                        if (currPercent > prevPrintPercent) {
+                            for (size_t p = prevPrintPercent + 1; p <= currPercent; p++) {
+                                std::cout << p << "% done\n";
+                                if ((p % (EMIT_STATS_AT_PERCENT * onePercent)) == 0) {
+                                    std::cout << "Last mutation sampleset size: " << lastSamplesetSize << "\n";
+                                    std::cout << "GRG nodes: " << grg->numNodes() << "\n";
+                                    std::cout << "GRG edges: " << grg->numEdges() << "\n";
+                                    stats.print(std::cout);
+                                }
+                                prevPrintPercent = currPercent;
+                            }
+                        }
                     }
                 }
             }
