@@ -34,7 +34,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <thread>
 // When enabled: garbage collects unneeded sample sets
 #define CLEANUP_SAMPLE_SETS_MAPPING 1
 
@@ -323,9 +322,10 @@ static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
     size_t numMutations = mutations.size();
     for (size_t i = 0; i < numMutations; ++i) {
         const auto& nodes = batchResults[i].first;
+        release_assert(!nodes.empty());
         NodeIDSizeT coalCount = batchResults[i].second;
         const Mutation& mut = mutations[i];
-        if (nodes.size() == 1) {
+        if (nodes.size() == 1 && !grg->isSample(nodes[0])) {
             grg->addMutation(mut, nodes[0]);
         } else {
             NodeID nid = grg->makeNode(1, true);
@@ -339,7 +339,6 @@ static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
     }
     return added;
 }
-
 
 /**
  * Top-level entry point for mapping mutations to a GRG in parallel.
@@ -383,7 +382,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
 
     // Note: this is made redundant by the batch application
     // The low-water mark for nodes. If a NodeID is greater than or equal to this, then it
-    // is a newly added (mutation) node. 
+    // is a newly added (mutation) node.
     const NodeID shapeNodeIdMax = grg->numNodes();
 
     // For each mutation, perform a topological bottom-up traversal from the sample
@@ -394,9 +393,14 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
 
     std::vector<std::pair<NodeIDList, NodeIDSizeT>> batchTasks(stats.totalMutations);
 
-    std::vector<MutationMappingStats> localStats(stats.totalMutations);
     std::vector<Mutation> mutationList{};
     mutationList.reserve(stats.totalMutations);
+
+    std::vector<MutationMappingStats> localStats(numThreads);
+    for (auto& stat : localStats) {
+        stat.reuseSizeHist.resize(STATS_HIST_SIZE);
+    }
+
     std::vector<Mutation> invalidMutations{};
     size_t taskNum = 0;
     std::atomic<int> completed(0);
@@ -409,7 +413,6 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
             size_t lastSamplesetSize = 0;
             while (mutations.next(unmapped, _ignored)) {
                 if (unmapped.samples.empty()) {
-                    // TODO: fix so there's no data races
                     lastSamplesetSize = unmapped.samples.size();
                     stats.emptyMutations++;
                     invalidMutations.push_back(unmapped.mutation);
@@ -419,16 +422,15 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
                     if (unmapped.samples.size() == 1) {
                         stats.mutationsWithOneSample++;
                     }
-
-                    NodeIDList sample = std::move(unmapped.samples);
-#pragma omp task firstprivate(taskNum, sample)
+                    const NodeIDList sample = std::move(unmapped.samples);
+                    size_t idx = taskNum++;
+#pragma omp task firstprivate(idx, sample)
                     {
-                        localStats[taskNum].reuseSizeHist.resize(STATS_HIST_SIZE);
-                        batchTasks[taskNum] = greedyAddMutationImmutable(
-                            grg, sampleCounts, sample, localStats[taskNum], taskNum);
+                        size_t thread_num = omp_get_thread_num();
+                        batchTasks[idx] =
+                            greedyAddMutationImmutable(grg, sampleCounts, sample, localStats[thread_num], idx);
                         completed.fetch_add(1, std::memory_order_relaxed);
                     }
-                    taskNum++;
 
                     size_t numCompleted = completed.load() + invalidMutations.size();
                     if (numCompleted != 0) {
@@ -436,11 +438,11 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
                         if (currPercent > prevPrintPercent) {
                             for (size_t p = prevPrintPercent + 1; p <= currPercent; p++) {
                                 std::cout << p << "% done\n";
-                                if ((p % (EMIT_STATS_AT_PERCENT * onePercent)) == 0) {
+                                if ((p % (EMIT_STATS_AT_PERCENT)) == 0) {
                                     std::cout << "Last mutation sampleset size: " << lastSamplesetSize << "\n";
                                     std::cout << "GRG nodes: " << grg->numNodes() << "\n";
                                     std::cout << "GRG edges: " << grg->numEdges() << "\n";
-                                    stats.print(std::cout);
+                                    // stats.print(std::cout);
                                 }
                                 prevPrintPercent = currPercent;
                             }
@@ -454,7 +456,6 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
     }
 
     batchTasks.resize(taskNum);
-    localStats.resize(taskNum);
 
     for (auto& mutation : invalidMutations) {
         grg->addMutation(mutation, INVALID_NODE_ID);
@@ -485,8 +486,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
             newNodes.push_back(nodeId);
         }
     }
-    
-    
+
     if (!newNodes.empty()) {
         size_t oldSize = sampleCounts.size();
         sampleCounts.resize(oldSize + newNodes.size());
@@ -499,6 +499,5 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg, MutationIterator& mu
         }
     }
     return stats;
-
 }
 }; // namespace grgl
