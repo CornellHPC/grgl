@@ -74,15 +74,17 @@ private:
 
 typedef std::shared_ptr<CudaBuffer<NodeIDSizeT>> CudaNodeIDBufferPtr;
 
-constexpr uint64_t GPUGRG_MAGIC = 0x4752474C47505501ULL; // "GRGLGPU" + version byte 01
+constexpr uint64_t GPUGRG_MAGIC = 0x4752474C47505502ULL; // "GRGLGPU" + version byte 02
 
 class GPUGRG {
 private:
     // these are resident GPU pointers
     CudaNodeIDBufferPtr rowOffsets; // Device pointer to row offsets (size: num_rows + 1)
     CudaNodeIDBufferPtr oldToNewMapping;
-    CudaNodeIDBufferPtr newToOldMapping;       // This is not used actually
-    CudaNodeIDBufferPtr mutationAndNewMapping; // Mapping between mutation id and new node id (in pairs)
+    CudaNodeIDBufferPtr newToOldMapping;        // This is not used actually
+    CudaNodeIDBufferPtr mutationAndNewMapping;  // Mapping between mutation id and new node id (in pairs)
+    CudaNodeIDBufferPtr missingMutAndNewMapping;   // Mapping between missingness node and new node if (in pairs)
+    CudaNodeIDBufferPtr individualCoalsDoubled; // Used for XTX initialization 
 
     // Since col indices may be large, this data may not be resident on GPU
     CudaNodeIDBufferPtr colIndices; // Device pointer to column indices (size: nnz)
@@ -116,6 +118,20 @@ public:
         return mutationAndNewMapping->get();
     }
 
+    NodeIDSizeT* getMissingMutAndNewMapping() {
+        if (!missingMutAndNewMapping) {
+            throw ApiMisuseFailure("Missing and new mapping GPU buffer is not allocated");
+        }
+        return missingMutAndNewMapping->get();
+    }
+
+    NodeIDSizeT* getNumIndividualCoalsDoubled() {
+        if (!individualCoalsDoubled) {
+            throw ApiMisuseFailure("Individual coalesced doubled GPU buffer is not allocated");
+        }
+        return individualCoalsDoubled->get();
+    }
+
     NodeIDSizeT* getColIndices() {
         if (!colIndices) {
             throw ApiMisuseFailure("Col indices GPU buffer is not allocated");
@@ -130,6 +146,8 @@ public:
     std::vector<NodeIDSizeT> hostHeavyCutoffs;
     std::vector<double> hostAvgChildCounts;
 
+    size_t numPloidy;    // Ploidy is used for byIndividual
+    size_t numMissing;   // Number of missing nodes
     size_t numRows;      // Number of rows, i.e. number of nodes
     size_t numSamples;   // Number of samples, i.e. number of leaf nodes
     size_t numMutations; // Number of mutations. may NOT correspond to number of non-leaf nodes
@@ -147,11 +165,15 @@ public:
           oldToNewMapping(nullptr),
           newToOldMapping(nullptr),
           mutationAndNewMapping(nullptr),
+          missingMutAndNewMapping(nullptr),
+          individualCoalsDoubled(nullptr),
           numRows(0),
           numSamples(0),
           numEdges(0),
           maxHeight(0),
           numMutations(0),
+          numPloidy(0),
+          numMissing(0),
           workStreamPtr(nullptr) {}
 
     // Destructor
@@ -210,6 +232,8 @@ public:
               size_t nonZeros,
               size_t mutations,
               size_t height,
+              size_t ploidy = 2,
+              size_t missing = 0,
               bool allocateColIndices = true,
               std::shared_ptr<cudaStream_t> streamPtr = nullptr) {
         free(); // Free any existing memory
@@ -218,11 +242,17 @@ public:
         numEdges = nonZeros;
         numMutations = mutations;
         maxHeight = height;
+        numPloidy = ploidy;
+        numMissing = missing;
 
         rowOffsets = std::make_shared<CudaBuffer<NodeIDSizeT>>(numRows + 1);
         oldToNewMapping = std::make_shared<CudaBuffer<NodeIDSizeT>>(numRows);
         newToOldMapping = std::make_shared<CudaBuffer<NodeIDSizeT>>(numRows);
         mutationAndNewMapping = std::make_shared<CudaBuffer<NodeIDSizeT>>(numMutations, 2);
+        individualCoalsDoubled = std::make_shared<CudaBuffer<NodeIDSizeT>>(numRows);
+        if (numMissing != 0) {
+            missingMutAndNewMapping = std::make_shared<CudaBuffer<NodeIDSizeT>>(numMissing, 2);
+        }
 
         if (allocateColIndices) {
             colIndices = std::make_shared<CudaBuffer<NodeIDSizeT>>(numEdges);
@@ -251,6 +281,8 @@ public:
         oldToNewMapping = nullptr;
         newToOldMapping = nullptr;
         mutationAndNewMapping = nullptr;
+        missingMutAndNewMapping = nullptr;
+        individualCoalsDoubled = nullptr;
         CHECK_CUDA_LAST_ERROR();
 
         hostColIndices.clear();
@@ -278,6 +310,8 @@ public:
                       const NodeIDSizeT* oldToNewMapping,
                       const NodeIDSizeT* newToOldMapping,
                       const NodeIDSizeT* mutationAndNewMapping,
+                      const NodeIDSizeT* missingMutAndNewMapping,
+                      const NodeIDSizeT* individualCoalsDoubled,
                       const NodeIDSizeT* heightCutoffs,
                       const NodeIDSizeT* heavyCutoffs,
                       const double* avgChildCounts,
@@ -299,6 +333,19 @@ public:
                    numMutations * 2 * sizeof(NodeIDSizeT),
                    cudaMemcpyHostToDevice);
         CHECK_CUDA_LAST_ERROR();
+        if (missingMutAndNewMapping != nullptr) {
+            cudaMemcpy(this->getMissingMutAndNewMapping(), missingMutAndNewMapping, numMissing * 2 * sizeof(NodeIDSizeT), cudaMemcpyHostToDevice);
+        } else {
+            if (this->numMissing != 0) {
+                throw ApiMisuseFailure("Missing and new mapping is not provided but numMissing is not zero");
+            }
+        }
+        CHECK_CUDA_LAST_ERROR();
+        if (individualCoalsDoubled != nullptr) {
+            cudaMemcpy(this->getNumIndividualCoalsDoubled(), individualCoalsDoubled, (numRows) * sizeof(NodeIDSizeT), cudaMemcpyHostToDevice);
+        } else {
+            throw ApiMisuseFailure("Individual coals doubled is not provided.");
+        }
 
         // cpu memcpy just use normal memcpys
         release_assert(this->hostHeightCutoffs.size() == maxHeight + 1);
@@ -327,6 +374,7 @@ public:
         std::cout << "  max_height: " << maxHeight << std::endl;
         std::cout << "  num_samples: " << numSamples << std::endl;
         std::cout << "  num_mutations: " << numMutations << std::endl;
+        std::cout << "  num_missing: " << numMissing << std::endl;
     }
 
     /**
@@ -366,6 +414,10 @@ public:
                                       d_outputMatrix.get(),
                                       outSize,
                                       false,
+                                      false,
+                                      nullptr,
+                                      NIE_ZERO,
+                                      nullptr,
                                       d_buffer.get(),
                                       bufferSizeByte);
         this->wait();
@@ -413,6 +465,10 @@ public:
                                           d_outputMatrix.get(),
                                           outSize,
                                           false,
+                                          false,
+                                          nullptr,
+                                          NIE_ZERO,
+                                          nullptr,
                                           d_buffer.get(),
                                           bufferSizeByte);
             this->wait();
@@ -437,6 +493,14 @@ public:
      * All input and output pointers must be device pointers.
      * The user should guarantee that col_indices pointer is valid, or a copy is in progress with the provided function.
      */
+
+    enum NodeInitEnum {
+        NIE_ZERO = 0,   // Zero values.
+        NIE_VECTOR = 1, // A vector of values, one for each row of the input matrix.
+        NIE_MATRIX = 2, // A matrix of values, of dimensions ROWS x NODES
+        NIE_XTX = 3,    // The number of coalescences * 2.
+    };
+
     template <class data_t>
     void matrixMultiplication(const data_t* inputMatrix,
                               size_t inputCols,
@@ -445,6 +509,10 @@ public:
                               data_t* outputMatrix,
                               size_t outputSize,
                               bool emitAllNodes,
+                              bool byIndividual,
+                              const data_t* initMatrix,
+                              NodeInitEnum nodeInit,
+                              data_t* missMatrix,
                               data_t* buffer,
                               size_t buffer_size);
 };
@@ -452,13 +520,15 @@ public:
 /**
  * Binary file format for GPUGRG storage:
  *
- * Header (56 bytes):
+ * Header (72 bytes):
  * - uint64_t magic_number (8 bytes) - File format identifier
  * - uint64_t num_rows (8 bytes)
  * - uint64_t nnz (8 bytes)
  * - uint64_t max_height (8 bytes)
  * - uint64_t num_samples (8 bytes)
  * - uint64_t num_mutations (8 bytes)
+ * - uint64_t num_missing (8 bytes)
+ * - uint64_t num_ploidy (8 bytes)
  * - uint64_t index_size (8 bytes) - Size of NodeIDSizeT type in bytes
  *
  * Data sections:
@@ -469,6 +539,9 @@ public:
  * - avg_child_counts: (max_height + 1) * sizeof(double) bytes
  * - old_to_new_mapping: num_rows * sizeof(NodeIDSizeT) bytes
  * - new_to_old_mapping: num_rows * sizeof(NodeIDSizeT) bytes
+ * - mutation_and_new_mapping: num_mutations * sizeof(NodeIDSizeT) * 2 bytes
+ * - individual_coals_doubled: (num_rows) * sizeof(NodeIDSizeT) bytes
+ * - missing_and_new_mapping: num_missing * sizeof(NodeIDSizeT) * 2 bytes
  */
 
 /**
@@ -672,21 +745,36 @@ public:
         release_assert(sizeof(NodeIDSizeT) >= sizeof(MutationId));
         release_assert(sizeof(NodeIDSizeT) >= sizeof(NodeID));
 
+        size_t numMissing = 0;
         std::vector<NodeIDSizeT> mutationNewPairs;
+        std::vector<NodeIDSizeT> missingMutNewPairs;
         for (const auto& triple : grg->getNodesAndMutations<GRG::MutNodeMiss>()) {
             const NodeID& nodeId = std::get<0>(triple);
             const MutationId& mutId = std::get<1>(triple);
+            const NodeID& missingId = std::get<2>(triple);
 
             if (nodeId == INVALID_NODE_ID) {
                 mutationNewPairs.push_back((NodeIDSizeT)INVALID_NODE_ID);
                 mutationNewPairs.push_back((NodeIDSizeT)INVALID_NODE_ID);
                 continue;
             }
+
+            if (missingId != INVALID_NODE_ID) {
+                missingMutNewPairs.push_back((NodeIDSizeT)mutId);
+                missingMutNewPairs.push_back((NodeIDSizeT)oldToNewFlat[missingId]);
+                numMissing++;
+            }
+
             release_assert(nodeId < h_numNodes);
             release_assert(mutId < grg->numMutations());
             const NodeIDSizeT& newID = oldToNewFlat[nodeId];
             mutationNewPairs.push_back((NodeIDSizeT)mutId);
             mutationNewPairs.push_back((NodeIDSizeT)newID);
+        }
+
+        std::vector<NodeIDSizeT> numIndividualCoalsDoubled;
+        for (NodeID i = 0; i < h_numNodes; i++) {
+            numIndividualCoalsDoubled.push_back(2 * grg->getNumIndividualCoals(i));
         }
 
         const size_t numValidMutations = mutationNewPairs.size() / 2;
@@ -702,12 +790,14 @@ public:
         std::cout << "Constructing GPUGRG with " << h_numNodes << " nodes, " << h_numEdges << " elements, max height "
                   << h_maxHeight << std::endl;
 #endif
-        gpu_grg.init(h_numNodes, grg->numSamples(), h_numEdges, numValidMutations, h_maxHeight);
+        gpu_grg.init(h_numNodes, grg->numSamples(), h_numEdges, numValidMutations, h_maxHeight, grg->getPloidy(), numMissing);
 
         gpu_grg.copyToDevice(h_rowOffsets.data(),
                              getNewId().data(),
                              getOldId().data(),
                              mutationNewPairs.data(),
+                             missingMutNewPairs.data(),
+                             numIndividualCoalsDoubled.data(),
                              h_heightCutoffs.data(),
                              h_heavyCutoffs.data(),
                              h_avgChildCounts.data(),
