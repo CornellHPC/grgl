@@ -1252,6 +1252,35 @@ PYBIND11_MODULE(_grgl, m) {
         :return: The GPUGRG object, which is equivalent to the input GRG.
         :rtype: pygrgl.GPUGRG
     )^");
+
+    m.def("load_gpu_grg",
+          &grgl::loadGPUGRGFromDisk,
+          py::arg("filename"),
+          R"^(
+        Load a GPUGRG directly from a .gpugrg file on disk, allocating GPU memory and
+        copying the data over. This avoids re-converting a GRG with grg_to_gpu() on
+        every run.
+
+        :param filename: The .gpugrg file to load.
+        :type filename: str
+        :return: The GPUGRG object, ready for matrix multiplication.
+        :rtype: pygrgl.GPUGRG
+    )^");
+
+    m.def("store_gpu_grg",
+          &grgl::storeGPUGRGToDisk,
+          py::arg("gpugrg"),
+          py::arg("filename"),
+          R"^(
+        Store a GPUGRG (e.g. one produced by grg_to_gpu()) to disk in the binary
+        .gpugrg format, so it can be reloaded later with load_gpu_grg() without
+        re-converting the source GRG.
+
+        :param gpugrg: The GPUGRG to store.
+        :type gpugrg: pygrgl.GPUGRG
+        :param filename: The .gpugrg file to write.
+        :type filename: str
+    )^");
 #endif
 
     m.attr("INVALID_NODE") = grgl::INVALID_NODE_ID;
