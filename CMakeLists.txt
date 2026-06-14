@@ -39,7 +39,7 @@ if(ENABLE_CUDA)
             
             # Set CUDA architecture (common architectures for compatibility)
             if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-                set(CMAKE_CUDA_ARCHITECTURES 60 61 70 75 80 86 90)
+                set(CMAKE_CUDA_ARCHITECTURES 75 80 86 90)
             endif()
             
             # Add CUDA compile definitions
