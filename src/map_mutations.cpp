@@ -775,7 +775,7 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
                                   const size_t threadCount) {
     const size_t batchSize = mutBatch.numMutations();
     std::vector<CandidatePlan> batchTasks(batchSize);
-    std::vector<MutationMappingStats> localStats(batchSize);
+    std::vector<MutationMappingStats> batchStats(batchSize);
 
     if (batchSize == 0) {
         return {};
@@ -787,38 +787,25 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
         for (size_t i = 0; i < batchSize; ++i) {
             batchTasks[i] = greedyAddMutationImmutable(
                 grg, mutBatch.sampleSet(i), collector, collector.m_collectedNodes[i], shapeNodeIdMax);
-            localStats[i] = batchTasks[i].stats;
-        }
-        for (const auto& threadStat : localStats) {
-            accumulateStats(stats, threadStat);
+            batchStats[i] = batchTasks[i].stats;
         }
         return applyBatchModifications(grg, mutBatch, batchTasks, currentMissing);
     }
-    omp_set_num_threads(static_cast<int>(numThreads));
-#pragma omp parallel
-    {
-#pragma omp single
-        {
-            for (size_t i = 0; i < batchSize; ++i) {
-#pragma omp task firstprivate(i)
-                {
-                    batchTasks[i] = greedyAddMutationImmutable(
-                        grg, mutBatch.sampleSet(i), collector, collector.m_collectedNodes[i], shapeNodeIdMax);
-                    localStats[i] = batchTasks[i].stats;
-                }
-            }
-#pragma omp taskwait
-        }
+#pragma omp parallel for schedule(guided, 1) num_threads(static_cast<int>(numThreads))
+    for (size_t i = 0; i < batchSize; ++i) {
+        batchTasks[i] = greedyAddMutationImmutable(
+            grg, mutBatch.sampleSet(i), collector, collector.m_collectedNodes[i], shapeNodeIdMax);
+        batchStats[i] = batchTasks[i].stats;
     }
 #else
     for (size_t i = 0; i < batchSize; ++i) {
         batchTasks[i] = greedyAddMutationImmutable(
             grg, mutBatch.sampleSet(i), collector, collector.m_collectedNodes[i], shapeNodeIdMax);
-        localStats[i] = batchTasks[i].stats;
+        batchStats[i] = batchTasks[i].stats;
     }
 #endif
 
-    for (const auto& threadStat : localStats) {
+    for (const auto& threadStat : batchStats) {
         accumulateStats(stats, threadStat);
     }
 
