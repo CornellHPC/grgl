@@ -640,7 +640,7 @@ bool TopoCandidateCollectorVisitor::safeVisit(const grgl::GRGPtr& grg, const grg
 static CandidatePlan greedyAddMutationImmutable(const MutableGRGPtr& grg,
                                                 const NodeIDList& mutSamples,
                                                 const TopoCandidateCollectorVisitor& collector,
-                                                CandidateList candidates,
+                                                CandidateList& candidates,
                                                 const NodeID shapeNodeIdMax) {
     CandidatePlan plan;
     plan.stats.reuseSizeHist.resize(STATS_HIST_SIZE, 0);
@@ -768,7 +768,7 @@ static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
 
 static NodeIDList processBatchPar(const MutableGRGPtr& grg,
                                   const MutationBatch& mutBatch,
-                                  const TopoCandidateCollectorVisitor& collector,
+                                  TopoCandidateCollectorVisitor& collector,
                                   const NodeID shapeNodeIdMax,
                                   std::pair<BpPosition, NodeID>& currentMissing,
                                   MutationMappingStats& stats,
