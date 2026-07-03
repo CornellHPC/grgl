@@ -40,9 +40,16 @@ public:
     BatchMembership() = default;
     BatchMembership(uint32_t* ptr, size_t batchSizeBits)
         : m_words32(ptr),
-          m_numBits(batchSizeBits) {}
+          m_numBits(batchSizeBits) {
+        if (m_words32 != nullptr) {
+            for (size_t i = 0; i < numWords32(); ++i) {
+                m_count += __builtin_popcount(m_words32[i]);
+            }
+        }
+    }
 
     size_t numWords32() const { return (m_numBits + 31) / 32; }
+    size_t count() const { return m_count; }
 
     void setOnes(size_t mutBatchBits) {
         release_assert(mutBatchBits <= m_numBits);
@@ -63,34 +70,40 @@ public:
         }
 
         std::fill(m_words32 + wordCount, m_words32 + numWords32(), 0U);
+        m_count = mutBatchBits;
     }
 
     void clear() {
         release_assert(m_words32 != nullptr);
         std::fill(m_words32, m_words32 + numWords32(), 0U);
+        m_count = 0;
     }
 
-    bool any() const {
-        return std::any_of(m_words32, m_words32 + numWords32(), [](uint32_t word) { return word != 0U; });
-    }
+    bool any() const { return m_count != 0; }
 
     void andAssign(const BatchMembership& other) {
         release_assert(numWords32() == other.numWords32());
+        size_t count = 0;
         for (size_t i = 0; i < numWords32(); ++i) {
             m_words32[i] &= other.m_words32[i];
+            count += __builtin_popcount(m_words32[i]);
         }
+        m_count = count;
     }
 
     void setBit(size_t bitIndex) {
         release_assert(bitIndex < m_numBits);
         const size_t word = bitIndex / 32;
         const size_t off = bitIndex % 32;
-        m_words32[word] |= (1U << off);
+        const uint32_t mask = (1U << off);
+        m_count += ((m_words32[word] & mask) == 0U) ? 1 : 0;
+        m_words32[word] |= mask;
     }
 
     void copyFrom(const BatchMembership& other) {
         release_assert(numWords32() == other.numWords32());
         std::copy(other.m_words32, other.m_words32 + numWords32(), m_words32);
+        m_count = other.m_count;
     }
 
     class Iterator {
@@ -159,6 +172,12 @@ public:
 private:
     uint32_t* m_words32{};
     size_t m_numBits = 0;
+    size_t m_count = 0;
+};
+
+enum class DenseMembershipMode {
+    NEVER,
+    CUTOFF,
 };
 
 struct MutationMappingStats {
@@ -177,7 +196,15 @@ struct MutationMappingStats {
     size_t numWithSingletons{};
     size_t maxSingletons{};
     size_t reusedMutNodes{};
+    size_t independentNodeVisits{};
+    size_t sharedNodeVisits{};
     std::vector<size_t> reuseSizeHist;
+    std::vector<size_t> independentNodeVisitsByBatch;
+    std::vector<size_t> sharedNodeVisitsByBatch;
+    std::vector<size_t> batchMutationCounts;
+    std::vector<double> traversalSecondsByBatch;
+    std::vector<double> candidateSecondsByBatch;
+    std::vector<double> applySecondsByBatch;
 
     void print(std::ostream& outStream) const {
         outStream << "mutations: " << this->totalMutations << std::endl;
@@ -195,6 +222,8 @@ struct MutationMappingStats {
         outStream << "maxSingletons: " << this->maxSingletons << std::endl;
         outStream << "avgSingletons: " << (double)this->singletonSampleEdges / (double)this->numWithSingletons
                   << std::endl;
+        outStream << "independentNodeVisits: " << this->independentNodeVisits << std::endl;
+        outStream << "sharedNodeVisits: " << this->sharedNodeVisits << std::endl;
     }
 };
 
@@ -203,13 +232,17 @@ class HaplotypeIndex;
 MutationMappingStats mapMutations(const MutableGRGPtr& grg,
                                   MutationIterator& mutations,
                                   bool verbose = false,
-                                  size_t mutationBatchSize = 64);
+                                  size_t mutationBatchSize = 64,
+                                  size_t threadCount = 1,
+                                  DenseMembershipMode denseMembershipMode = DenseMembershipMode::CUTOFF);
 
 MutationMappingStats mapMutations(const MutableGRGPtr& grg,
                                   const std::vector<Mutation>& mutations,
                                   const std::vector<NodeIDList>& samples,
                                   bool verbose = false,
-                                  size_t mutationBatchSize = 64);
+                                  size_t mutationBatchSize = 64,
+                                  size_t threadCount = 1,
+                                  DenseMembershipMode denseMembershipMode = DenseMembershipMode::CUTOFF);
 
 }; // namespace grgl
 

@@ -349,7 +349,21 @@ PYBIND11_MODULE(_grgl, m) {
         .def_readonly("num_with_singletons", &grgl::MutationMappingStats::numWithSingletons)
         .def_readonly("max_singletons", &grgl::MutationMappingStats::maxSingletons)
         .def_readonly("reused_mut_nodes", &grgl::MutationMappingStats::reusedMutNodes)
-        .def_readonly("reuse_size_hist", &grgl::MutationMappingStats::reuseSizeHist);
+        .def_readonly("independent_node_visits", &grgl::MutationMappingStats::independentNodeVisits)
+        .def_readonly("shared_node_visits", &grgl::MutationMappingStats::sharedNodeVisits)
+        .def_readonly("reuse_size_hist", &grgl::MutationMappingStats::reuseSizeHist)
+        .def_readonly("independent_node_visits_by_batch",
+                      &grgl::MutationMappingStats::independentNodeVisitsByBatch)
+        .def_readonly("shared_node_visits_by_batch", &grgl::MutationMappingStats::sharedNodeVisitsByBatch)
+        .def_readonly("batch_mutation_counts", &grgl::MutationMappingStats::batchMutationCounts)
+        .def_readonly("traversal_seconds_by_batch", &grgl::MutationMappingStats::traversalSecondsByBatch)
+        .def_readonly("candidate_seconds_by_batch", &grgl::MutationMappingStats::candidateSecondsByBatch)
+        .def_readonly("apply_seconds_by_batch", &grgl::MutationMappingStats::applySecondsByBatch);
+
+    py::enum_<grgl::DenseMembershipMode>(m, "DenseMembershipMode")
+        .value("NEVER", grgl::DenseMembershipMode::NEVER)
+        .value("CUTOFF", grgl::DenseMembershipMode::CUTOFF)
+        .export_values();
 
     py::class_<grgl::GRG, std::shared_ptr<grgl::GRG>> grgClass(m, "GRG");
     grgClass
@@ -1032,22 +1046,21 @@ PYBIND11_MODULE(_grgl, m) {
            const std::vector<grgl::Mutation>& mutations,
            const std::vector<grgl::NodeIDList>& samples,
            bool verbose,
-           size_t mutationBatchSize) {
-            if (mutationBatchSize == 0) {
-                mutationBatchSize = mutations.size();
-            }
-            return grgl::mapMutations(grg, mutations, samples, verbose, mutationBatchSize);
+           size_t mutationBatchSize,
+           size_t threadCount,
+           grgl::DenseMembershipMode denseMembershipMode) {
+            return grgl::mapMutations(
+                grg, mutations, samples, verbose, mutationBatchSize, threadCount, denseMembershipMode);
         },
         py::arg("grg"),
         py::arg("mutations"),
         py::arg("samples"),
         py::arg("verbose") = false,
-        py::arg("mutation_batch_size") = 0,
+        py::arg("mutation_batch_size") = 64,
+        py::arg("thread_count") = 1,
+        py::arg("dense_membership_mode") = grgl::DenseMembershipMode::CUTOFF,
         R"^(
-        Map the provided mutations into a MutableGRG. By default, the entire input is processed as one batch
-        (a single graph traversal; RAM intensive). Set the mutation_batch_size parameter to perform the mapping
-        in batches, which saves RAM. Or you can pass in smaller lists of mutations and call the function multiple
-        times.
+        Map the provided mutations into a MutableGRG.
 
         :param grg: The MutableGRG that will be modified in-place.
         :type grg: pygrgl.MutableGRG
@@ -1059,6 +1072,10 @@ PYBIND11_MODULE(_grgl, m) {
         :type verbose: bool
         :param mutation_batch_size: Number of mutations to accumulate before mapping.
         :type mutation_batch_size: int
+        :param thread_count: Number of worker threads to use for candidate processing per batch.
+        :type thread_count: int
+        :param dense_membership_mode: Whether to use dense membership above the coverage cutoff.
+        :type dense_membership_mode: pygrgl.DenseMembershipMode
         :return: Mapping statistics.
         :rtype: pygrgl.MutationMappingStats
     )^");
