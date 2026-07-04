@@ -778,7 +778,7 @@ static NodeIDList applyBatchModifications(const MutableGRGPtr& grg,
             continue;
         }
 
-        const NodeID mutNodeId = grg->makeNode(1, true);
+        const NodeID mutNodeId = grg->makeNode(1);
         if (!mut.isMissing()) {
             grg->addMutation(mut, mutNodeId, missingnessNode);
         } else {
