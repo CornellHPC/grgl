@@ -106,6 +106,9 @@ static void accumulateStats(MutationMappingStats& total, const MutationMappingSt
     total.batchMutationCounts.insert(total.batchMutationCounts.end(),
                                      delta.batchMutationCounts.begin(),
                                      delta.batchMutationCounts.end());
+    total.batchSampleCounts.insert(total.batchSampleCounts.end(),
+                                   delta.batchSampleCounts.begin(),
+                                   delta.batchSampleCounts.end());
     total.traversalSecondsByBatch.insert(total.traversalSecondsByBatch.end(),
                                          delta.traversalSecondsByBatch.begin(),
                                          delta.traversalSecondsByBatch.end());
@@ -420,6 +423,7 @@ public:
     const Mutation& getMutation(size_t idx) const { return m_mutations.at(idx).m_mutation; }
     const NodeIDList& sampleSet(size_t idx) const { return m_sampleSets.at(idx); }
     size_t numMutations() const { return m_mutations.size(); }
+    size_t numSamples() const { return m_seedList.size(); }
 
     void clear() {
         m_sampleSets.clear();
@@ -834,6 +838,7 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
         stats.independentNodeVisitsByBatch.push_back(collector.independentNodeVisits());
         stats.sharedNodeVisitsByBatch.push_back(collector.sharedNodeVisits());
         stats.batchMutationCounts.push_back(batchSize);
+        stats.batchSampleCounts.push_back(mutBatch.numSamples());
         stats.traversalSecondsByBatch.push_back(traversalSeconds);
         stats.candidateSecondsByBatch.push_back(candidateSeconds);
         const auto applyStartTime = std::chrono::high_resolution_clock::now();
@@ -867,6 +872,7 @@ static NodeIDList processBatchPar(const MutableGRGPtr& grg,
     stats.independentNodeVisitsByBatch.push_back(collector.independentNodeVisits());
     stats.sharedNodeVisitsByBatch.push_back(collector.sharedNodeVisits());
     stats.batchMutationCounts.push_back(batchSize);
+    stats.batchSampleCounts.push_back(mutBatch.numSamples());
     stats.traversalSecondsByBatch.push_back(traversalSeconds);
     stats.candidateSecondsByBatch.push_back(candidateSeconds);
 

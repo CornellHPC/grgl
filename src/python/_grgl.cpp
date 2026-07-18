@@ -426,6 +426,7 @@ PYBIND11_MODULE(_grgl, m) {
                       &grgl::MutationMappingStats::independentNodeVisitsByBatch)
         .def_readonly("shared_node_visits_by_batch", &grgl::MutationMappingStats::sharedNodeVisitsByBatch)
         .def_readonly("batch_mutation_counts", &grgl::MutationMappingStats::batchMutationCounts)
+        .def_readonly("batch_sample_counts", &grgl::MutationMappingStats::batchSampleCounts)
         .def_readonly("traversal_seconds_by_batch", &grgl::MutationMappingStats::traversalSecondsByBatch)
         .def_readonly("candidate_seconds_by_batch", &grgl::MutationMappingStats::candidateSecondsByBatch)
         .def_readonly("apply_seconds_by_batch", &grgl::MutationMappingStats::applySecondsByBatch);

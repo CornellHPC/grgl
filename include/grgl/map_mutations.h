@@ -202,6 +202,7 @@ struct MutationMappingStats {
     std::vector<size_t> independentNodeVisitsByBatch;
     std::vector<size_t> sharedNodeVisitsByBatch;
     std::vector<size_t> batchMutationCounts;
+    std::vector<size_t> batchSampleCounts;
     std::vector<double> traversalSecondsByBatch;
     std::vector<double> candidateSecondsByBatch;
     std::vector<double> applySecondsByBatch;
