@@ -35,6 +35,7 @@
 
 namespace py = pybind11;
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -249,6 +250,75 @@ std::vector<grgl::NodeID> getBfsOrder(const grgl::GRGPtr& grg,
     grgl::NodeNumberingVisitor iterator(grgl::DFS_PASS_NONE);
     grg->visitBfs(iterator, direction, seedList, maxQueueWidth);
     return std::move(iterator.m_nodeIds);
+}
+
+py::array_t<grgl::NodeID> nodeIdsToArray(const grgl::NodeIDList& nodeIds) {
+    py::array_t<grgl::NodeID> result(nodeIds.size());
+    py::buffer_info resultBuf = result.request();
+    auto* output = static_cast<grgl::NodeID*>(resultBuf.ptr);
+    std::copy(nodeIds.begin(), nodeIds.end(), output);
+    return result;
+}
+
+class DescendantSampleVisitor : public grgl::GRGVisitor {
+public:
+    explicit DescendantSampleVisitor(std::vector<uint8_t>* unavailable = nullptr)
+        : m_unavailable(unavailable) {}
+
+    bool visit(const grgl::GRGPtr& grg,
+               grgl::NodeID nodeId,
+               grgl::TraversalDirection direction,
+               grgl::DfsPass dfsPass = grgl::DFS_PASS_NONE) override {
+        release_assert(direction == grgl::TraversalDirection::DIRECTION_DOWN);
+        release_assert(dfsPass == grgl::DFS_PASS_NONE);
+        if (nodeId < grg->numSamples()) {
+            m_samples.push_back(nodeId);
+            if (m_unavailable != nullptr) {
+                m_unavailable->at(nodeId) = 1;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    grgl::NodeIDList m_samples;
+
+private:
+    std::vector<uint8_t>* m_unavailable;
+};
+
+grgl::NodeIDList descendantSamples(const grgl::GRGPtr& grg,
+                                   grgl::NodeID nodeId,
+                                   std::vector<uint8_t>* unavailable = nullptr) {
+    if (nodeId == grgl::INVALID_NODE_ID) {
+        return {};
+    }
+
+    DescendantSampleVisitor visitor(unavailable);
+    grg->visitBfs(visitor, grgl::TraversalDirection::DIRECTION_DOWN, {nodeId});
+    return std::move(visitor.m_samples);
+}
+
+py::tuple getDescendantSamplesAndComplement(const grgl::GRGPtr& grg,
+                                            const grgl::NodeIDList& nodeIds,
+                                            const grgl::NodeIDList& excludeNodeIds) {
+    std::vector<uint8_t> unavailable(grg->numSamples(), 0);
+    py::list sampleSets;
+    for (const auto nodeId : nodeIds) {
+        sampleSets.append(nodeIdsToArray(descendantSamples(grg, nodeId, &unavailable)));
+    }
+    for (const auto nodeId : excludeNodeIds) {
+        descendantSamples(grg, nodeId, &unavailable);
+    }
+
+    grgl::NodeIDList complement;
+    complement.reserve(grg->numSamples());
+    for (grgl::NodeID sampleId = 0; sampleId < grg->numSamples(); ++sampleId) {
+        if (unavailable[sampleId] == 0) {
+            complement.push_back(sampleId);
+        }
+    }
+    return py::make_tuple(sampleSets, nodeIdsToArray(complement));
 }
 
 std::vector<grgl::NodeID> getDfsOrder(const grgl::GRGPtr& grg,
@@ -1104,6 +1174,29 @@ PYBIND11_MODULE(_grgl, m) {
         :type max_queue_width: int
         :return: The ordered list of NodeIDs.
         :rtype: List[int]
+    )^");
+
+    m.def("get_descendant_samples_and_complement",
+          &getDescendantSamplesAndComplement,
+          py::arg("grg"),
+          py::arg("node_ids"),
+          py::arg("exclude_node_ids") = grgl::NodeIDList(),
+          R"^(
+        Get descendant sample NodeIDs for each input node, plus the complement sample set.
+
+        The complement contains samples that are not descendants of any node in ``node_ids`` or
+        ``exclude_node_ids``. This is useful for computing the implicit reference allele carrier set
+        for a site after collecting explicit allele and missingness carriers.
+
+        :param grg: The GRG to traverse.
+        :type grg: pygrgl.GRG or pygrgl.MutableGRG
+        :param node_ids: Nodes whose descendant samples should be returned.
+        :type node_ids: List[int]
+        :param exclude_node_ids: Nodes whose descendant samples should be excluded from the complement
+            but not returned as carrier arrays.
+        :type exclude_node_ids: List[int]
+        :return: Tuple of (list of numpy arrays, complement numpy array).
+        :rtype: Tuple[List[numpy.ndarray], numpy.ndarray]
     )^");
 
     m.def("get_dfs_order",
