@@ -124,9 +124,6 @@ static double secondsSince(const std::chrono::high_resolution_clock::time_point&
     return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - startTime).count();
 }
 
-// What percentage of total samples must be covered before we switch to dense bitvecs
-constexpr double USE_DENSE_COVERAGE_PROPORTION(0.001f);
-
 // SampleCoverageSet is the interface for tracking which sample nodes lie beneath a GRG node.
 class SampleCoverageSet {
 public:
@@ -460,11 +457,11 @@ private:
 // TopoCandidateCollectorVisitor walks the GRG to collect candidate nodes and sample coverage for each mutation bit.
 class TopoCandidateCollectorVisitor : public grgl::GRGVisitor {
 public:
-    explicit TopoCandidateCollectorVisitor(const MutationBatch& mutBatch, DenseMembershipMode denseMembershipMode)
+    explicit TopoCandidateCollectorVisitor(const MutationBatch& mutBatch, double denseMembershipCutoff)
         : m_batchBitCount(mutBatch.m_batchBitCount),
           m_sampleBatchMembership(mutBatch.m_sampleMembership),
           m_collectedNodes(mutBatch.m_batchBitCount),
-          m_denseMembershipMode(denseMembershipMode) {}
+          m_denseMembershipCutoff(denseMembershipCutoff) {}
     bool visit(const grgl::GRGPtr& grg,
                const grgl::NodeID nodeId,
                const grgl::TraversalDirection direction,
@@ -515,7 +512,7 @@ private:
     const std::vector<BatchMembership>& m_sampleBatchMembership;
     size_t m_independentNodeVisits{};
     size_t m_sharedNodeVisits{};
-    DenseMembershipMode m_denseMembershipMode;
+    double m_denseMembershipCutoff;
     // shared 'thread-safe' logic
     bool safeVisit(const grgl::GRGPtr& grg, grgl::NodeID nodeId);
     DEFINE_MUTEX(m_collectedNodesMutex)
@@ -548,8 +545,7 @@ bool TopoCandidateCollectorVisitor::safeVisit(const grgl::GRGPtr& grg, const grg
     std::unique_ptr<BitVecCoverageSet> coalTrackerSet;
     std::unordered_map<NodeIDSizeT, NodeIDSizeT> coalTrackerMap;
     double coveragePercent = (double)sampleCount / (double)grg->numSamples();
-    bool dense = m_denseMembershipMode == DenseMembershipMode::CUTOFF &&
-                 coveragePercent > USE_DENSE_COVERAGE_PROPORTION;
+    bool dense = coveragePercent > m_denseMembershipCutoff;
     if (dense) {
         samplesBeneathSet =
             std::unique_ptr<SampleCoverageSet>(new BitVecCoverageSet(grg->numSamples(), m_batchBitCount));
@@ -888,12 +884,12 @@ static NodeIDList greedyAddMutation(const MutableGRGPtr& grg,
                                     const NodeID shapeNodeIdMax,
                                     std::pair<BpPosition, NodeID>& currentMissing,
                                     const size_t threadCount,
-                                    DenseMembershipMode denseMembershipMode) {
+                                    double denseMembershipCutoff) {
     // The topological order of nodeIDs is maintained throughout this algorithm.
     release_assert(grg->nodesAreOrdered());
     const NodeIDList& mutSamples = mutBatch.seedList();
 
-    TopoCandidateCollectorVisitor collector(mutBatch, denseMembershipMode);
+    TopoCandidateCollectorVisitor collector(mutBatch, denseMembershipCutoff);
     const auto traversalStartTime = std::chrono::high_resolution_clock::now();
     grg->visitTopo(collector, grgl::TraversalDirection::DIRECTION_UP, mutSamples);
     const double traversalSeconds = secondsSince(traversalStartTime);
@@ -909,7 +905,7 @@ mapMutationsImpl(const MutableGRGPtr& grg,
                  bool verbose,
                  size_t mutationBatchSize,
                  size_t threadCount,
-                 DenseMembershipMode denseMembershipMode) {
+                 double denseMembershipCutoff) {
     auto operationStartTime = std::chrono::high_resolution_clock::now();
 #define START_TIMING_OPERATION() operationStartTime = std::chrono::high_resolution_clock::now();
 #define EMIT_TIMING_MESSAGE(msg)                                                                                       \
@@ -973,14 +969,26 @@ mapMutationsImpl(const MutableGRGPtr& grg,
 
                 if (mutBatch.numMutations() == mutationBatchSize) {
                     greedyAddMutation(
-                        grg, mutBatch, stats, shapeNodeIdMax, currentMissing, threadCount, denseMembershipMode);
+                        grg,
+                        mutBatch,
+                        stats,
+                        shapeNodeIdMax,
+                        currentMissing,
+                        threadCount,
+                        denseMembershipCutoff);
                     mutBatch.clear();
                 }
             }
         } else {
             if (mutBatch.numMutations() > 0) {
                 greedyAddMutation(
-                    grg, mutBatch, stats, shapeNodeIdMax, currentMissing, threadCount, denseMembershipMode);
+                    grg,
+                    mutBatch,
+                    stats,
+                    shapeNodeIdMax,
+                    currentMissing,
+                    threadCount,
+                    denseMembershipCutoff);
                 mutBatch.clear();
             }
             stats.emptyMutations++;
@@ -1011,7 +1019,7 @@ mapMutationsImpl(const MutableGRGPtr& grg,
     }
 
     if (mutBatch.numMutations() > 0) {
-        greedyAddMutation(grg, mutBatch, stats, shapeNodeIdMax, currentMissing, threadCount, denseMembershipMode);
+        greedyAddMutation(grg, mutBatch, stats, shapeNodeIdMax, currentMissing, threadCount, denseMembershipCutoff);
     }
     return stats;
 }
@@ -1022,13 +1030,19 @@ mapMutations(const MutableGRGPtr& grg,
              bool verbose,
              size_t mutationBatchSize,
              size_t threadCount,
-             DenseMembershipMode denseMembershipMode) {
+             double denseMembershipCutoff) {
     auto next = [&mutations](MutationAndSamples& unmapped, size_t& totalSamples) {
         return mutations.next(unmapped, totalSamples);
     };
 
     return mapMutationsImpl(
-        grg, mutations.countMutations(), std::move(next), verbose, mutationBatchSize, threadCount, denseMembershipMode);
+        grg,
+        mutations.countMutations(),
+        std::move(next),
+        verbose,
+        mutationBatchSize,
+        threadCount,
+        denseMembershipCutoff);
 }
 
 MutationMappingStats mapMutations(const MutableGRGPtr& grg,
@@ -1037,7 +1051,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg,
                                   bool verbose,
                                   size_t mutationBatchSize,
                                   size_t threadCount,
-                                  DenseMembershipMode denseMembershipMode) {
+                                  double denseMembershipCutoff) {
     api_exc_check(mutations.size() == samples.size(),
                   "mutations and samples must be the same length in mapMutations");
 
@@ -1054,7 +1068,13 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg,
     };
 
     return mapMutationsImpl(
-        grg, mutations.size(), std::move(next), verbose, mutationBatchSize, threadCount, denseMembershipMode);
+        grg,
+        mutations.size(),
+        std::move(next),
+        verbose,
+        mutationBatchSize,
+        threadCount,
+        denseMembershipCutoff);
 }
 
 } // namespace grgl

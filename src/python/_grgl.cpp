@@ -431,11 +431,6 @@ PYBIND11_MODULE(_grgl, m) {
         .def_readonly("candidate_seconds_by_batch", &grgl::MutationMappingStats::candidateSecondsByBatch)
         .def_readonly("apply_seconds_by_batch", &grgl::MutationMappingStats::applySecondsByBatch);
 
-    py::enum_<grgl::DenseMembershipMode>(m, "DenseMembershipMode")
-        .value("NEVER", grgl::DenseMembershipMode::NEVER)
-        .value("CUTOFF", grgl::DenseMembershipMode::CUTOFF)
-        .export_values();
-
     py::class_<grgl::GRG, std::shared_ptr<grgl::GRG>> grgClass(m, "GRG");
     grgClass
         .def("is_sample", &grgl::GRG::isSample, R"^(
@@ -1119,9 +1114,15 @@ PYBIND11_MODULE(_grgl, m) {
            bool verbose,
            size_t mutationBatchSize,
            size_t threadCount,
-           grgl::DenseMembershipMode denseMembershipMode) {
+           double denseMembershipCutoff) {
             return grgl::mapMutations(
-                grg, mutations, samples, verbose, mutationBatchSize, threadCount, denseMembershipMode);
+                grg,
+                mutations,
+                samples,
+                verbose,
+                mutationBatchSize,
+                threadCount,
+                denseMembershipCutoff);
         },
         py::arg("grg"),
         py::arg("mutations"),
@@ -1129,7 +1130,7 @@ PYBIND11_MODULE(_grgl, m) {
         py::arg("verbose") = false,
         py::arg("mutation_batch_size") = 64,
         py::arg("thread_count") = 1,
-        py::arg("dense_membership_mode") = grgl::DenseMembershipMode::CUTOFF,
+        py::arg("dense_membership_cutoff") = grgl::DEFAULT_DENSE_MEMBERSHIP_CUTOFF,
         R"^(
         Map the provided mutations into a MutableGRG.
 
@@ -1145,8 +1146,8 @@ PYBIND11_MODULE(_grgl, m) {
         :type mutation_batch_size: int
         :param thread_count: Number of worker threads to use for candidate processing per batch.
         :type thread_count: int
-        :param dense_membership_mode: Whether to use dense membership above the coverage cutoff.
-        :type dense_membership_mode: pygrgl.DenseMembershipMode
+        :param dense_membership_cutoff: Coverage proportion above which dense membership is used.
+        :type dense_membership_cutoff: float
         :return: Mapping statistics.
         :rtype: pygrgl.MutationMappingStats
     )^");

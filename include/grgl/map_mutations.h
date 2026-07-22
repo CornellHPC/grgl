@@ -175,10 +175,7 @@ private:
     size_t m_count = 0;
 };
 
-enum class DenseMembershipMode {
-    NEVER,
-    CUTOFF,
-};
+constexpr double DEFAULT_DENSE_MEMBERSHIP_CUTOFF(0.001);
 
 struct MutationMappingStats {
     size_t totalMutations{};
@@ -235,7 +232,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg,
                                   bool verbose = false,
                                   size_t mutationBatchSize = 64,
                                   size_t threadCount = 1,
-                                  DenseMembershipMode denseMembershipMode = DenseMembershipMode::CUTOFF);
+                                  double denseMembershipCutoff = DEFAULT_DENSE_MEMBERSHIP_CUTOFF);
 
 MutationMappingStats mapMutations(const MutableGRGPtr& grg,
                                   const std::vector<Mutation>& mutations,
@@ -243,7 +240,7 @@ MutationMappingStats mapMutations(const MutableGRGPtr& grg,
                                   bool verbose = false,
                                   size_t mutationBatchSize = 64,
                                   size_t threadCount = 1,
-                                  DenseMembershipMode denseMembershipMode = DenseMembershipMode::CUTOFF);
+                                  double denseMembershipCutoff = DEFAULT_DENSE_MEMBERSHIP_CUTOFF);
 
 }; // namespace grgl
 
