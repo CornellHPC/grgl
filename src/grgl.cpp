@@ -70,6 +70,11 @@ int main(int argc, char** argv) {
         parser, "map-muts", "Map the mutations from the provided file", {'m', "map-muts"});
     args::ValueFlag<size_t> mapMutationsBatchSize(
         parser, "mutation-batch-size", "Map this many mutations in a batch (default 64)", {"mutation-batch-size"});
+    args::ValueFlag<double> denseMembershipCutoff(parser,
+                                                  "dense-membership-cutoff",
+                                                  "Coverage proportion above which dense membership is used when "
+                                                  "mapping mutations (default 0.001)",
+                                                  {"dense-membership-cutoff"});
     args::Flag binaryMutations(parser,
                                "binary-muts",
                                "Do not store the allele with the mutation, only that a mutation occurred",
@@ -342,15 +347,15 @@ int main(int argc, char** argv) {
             return 1;
         }
         grgl::MutationMappingStats stats;
-        if (mapMutationsBatchSize) {
-            stats = grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG),
-                                       *unmappedMutations,
-                                       verbose,
-                                       *mapMutationsBatchSize);
-        } else {
-            stats =
-                grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG), *unmappedMutations, verbose);
-        }
+        const size_t mapMutationBatchSize = mapMutationsBatchSize ? *mapMutationsBatchSize : 64;
+        const double mapMutationDenseMembershipCutoff =
+            denseMembershipCutoff ? *denseMembershipCutoff : grgl::DEFAULT_DENSE_MEMBERSHIP_CUTOFF;
+        stats = grgl::mapMutations(std::dynamic_pointer_cast<grgl::MutableGRG>(theGRG),
+                                   *unmappedMutations,
+                                   verbose,
+                                   mapMutationBatchSize,
+                                   1,
+                                   mapMutationDenseMembershipCutoff);
         if (verbose) {
             EMIT_TIMING_MESSAGE("Mapping mutations took");
             std::cerr << std::endl;
