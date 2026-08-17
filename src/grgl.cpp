@@ -28,6 +28,7 @@
 #include "grg_helpers.h"
 #include "grgl/common.h"
 #include "grgl/grg.h"
+#include "grgl/grg2ts.h"
 #include "grgl/grgnode.h"
 #include "grgl/map_mutations.h"
 #include "grgl/mut_iterator.h"
@@ -36,6 +37,7 @@
 #include "grgl/ts2grg.h"
 #include "grgl/windowing.h"
 #include "pooled_jobs.h"
+#include "tskit/trees.h"
 #include "tskit_util.h"
 #include "util.h"
 
@@ -292,6 +294,9 @@ int main(int argc, char** argv) {
         if (noTreeMap) {
             buildFlags |= grgl::GBF_NO_TREE_MAP;
         }
+        if (noSimplify) {
+            buildFlags |= grgl::GBF_NO_SIMPLIFY;
+        }
         size_t treeCount = 0;
         if (treesArg) {
             if (*treesArg == "optimal") {
@@ -497,13 +502,21 @@ int main(int argc, char** argv) {
         workers.doAllWork(jobs);
         EMIT_TIMING_MESSAGE("Split GRG into " << windows.size() << " parts in ");
     } else if (outfile) {
-        START_TIMING_OPERATION();
-        auto counts = saveGRG(theGRG, *outfile, !noSimplify);
-        if (verbose) {
-            std::cout << STREAM_PUID << "Wrote simplified GRG with:" << std::endl;
-            std::cout << STREAM_PUID << "  Nodes: " << counts.first << std::endl;
-            std::cout << STREAM_PUID << "  Edges: " << counts.second << std::endl;
-            EMIT_TIMING_MESSAGE("Wrote GRG to " << *outfile << " in ");
+        if (ends_with(*outfile, ".trees")) {
+            START_TIMING_OPERATION();
+            grgToTrees(theGRG, *outfile);
+            if (verbose) {
+                EMIT_TIMING_MESSAGE("Wrote tskit TreeSequence to " << *outfile << " in ");
+            }
+        } else {
+            START_TIMING_OPERATION();
+            auto counts = saveGRG(theGRG, *outfile, !noSimplify);
+            if (verbose) {
+                std::cout << STREAM_PUID << "Wrote simplified GRG with:" << std::endl;
+                std::cout << STREAM_PUID << "  Nodes: " << counts.first << std::endl;
+                std::cout << STREAM_PUID << "  Edges: " << counts.second << std::endl;
+                EMIT_TIMING_MESSAGE("Wrote GRG to " << *outfile << " in ");
+            }
         }
     }
 
