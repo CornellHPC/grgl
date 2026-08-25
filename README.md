@@ -13,6 +13,8 @@ node if-and-only-if that sample contains that mutation. These paths go through i
 common ancestry between multiple samples, and this can result in significant compression **(30-50x smaller than
 .vcf.gz)**. Calculations on the whole dataset can be performed very quickly on GRG, using GRGL. 
 
+This branch contains the GRGL implementation used by the paper, "Cheaper by the Batch: Shared Traversal for Genotype Graph Editing". A preprint describing this work is available at [TODO: add paper link].
+
 Recent releases (after v2.3) support the following improvements over the [initial paper](https://www.nature.com/articles/s43588-024-00739-9):
 1. Graphs are more than 2x smaller (in RAM and on disk)
 2. Graph construction is 10-25x faster
@@ -23,15 +25,18 @@ Recent releases (after v2.3) support the following improvements over the [initia
 7. Phenotype simulation is available with [grg_pheno_sim](https://github.com/aprilweilab/grg_pheno_sim/) (`pip install grg_pheno_sim`)
 8. Construction from `.vcf.gz` now supports tabix indexes, making that input format feasible for large datasets
 9. Better support for missing data, see [the documentation](https://grgl.readthedocs.io/en/stable/)
+10. Batched mutation remapping shares traversal across many genotype graph edits and achieves up to 10.5x end-to-end speedup on mutation editing workflows
 
 If you need to cite something, use
 ["Enabling efficient analysis of biobank-scale data with genotype representation graphs"](https://www.nature.com/articles/s43588-024-00739-9).
+If you use mutation mapping features, please also cite "Cheaper by the Batch: Shared Traversal for Genotype Graph Editing".
 
 # Documentation
 
 Check out [the main documentation](https://grgl.readthedocs.io/en/latest/) for core API documentation, examples, tutorials, etc. Things covered in the documentation include:
 * Creating and using GRGs
 * Performing GWAS, PCA, GWAS with covariates, or other analyses with GRG
+* Running the polarization workflow from "Cheaper by the Batch" via [GRAPP's polarization branch](https://github.com/CornellHPC/grapp/tree/polarization)
 * Simulating phenotypes with GRG
 * Using GRG with Python (integration with [numpy](https://numpy.org/), [pandas](https://pandas.pydata.org/), [scipy](https://scipy.org/), etc.)
 
