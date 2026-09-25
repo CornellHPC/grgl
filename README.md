@@ -161,6 +161,19 @@ Construction for small datasets (such as those included as tests in this reposit
 See the provided [jupyter notebooks](https://github.com/aprilweilab/grgl/tree/main/jupyter) and [GettingStarted.md](https://github.com/aprilweilab/grgl/blob/main/GettingStarted.md) for more examples.
 
 
+## Mutation mapping instrumentation
+
+`mapMutations` processes mutations in shared traversal batches, controlled by
+`mutation_batch_size` in Python or `--mutation-batch-size` in the native CLI
+(default 64). Larger batches can improve traversal sharing but use more memory.
+The returned `MutationMappingStats` includes node-visit counts and per-batch
+traversal, candidate-processing, and graph-update timings, collected in memory.
+
+GRAPP separately controls input batching with `--map-input-batch-size` and internal
+traversal batching with `--map-batch-size`. Its optional `--map-timing-csv` writes
+rows together after each mapping call, keeping file I/O out of the traversal and
+reducing repeated write overhead.
+
 ## Limits
 
 | Quantity | Limit |
